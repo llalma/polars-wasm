@@ -15,6 +15,7 @@ members = [
   "examples/read_parquet",
   "examples/python_rust_compiled_function",
 ]
+version = "0.24.3"
 
 [workspace.package]
 version = "0.24.3"
