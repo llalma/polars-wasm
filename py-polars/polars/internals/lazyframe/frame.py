@@ -567,6 +567,7 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
         simplify_expression: bool = True,
         slice_pushdown: bool = True,
         common_subplan_elimination: bool = True,
+        allow_streaming: bool = False,
     ) -> str:
         """Create a string representation of the optimized query plan."""
         ldf = self._ldf.optimization_toggle(
@@ -576,6 +577,7 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
             simplify_expression,
             slice_pushdown,
             common_subplan_elimination,
+            allow_streaming,
         )
 
         return ldf.describe_optimized_plan()
@@ -593,6 +595,7 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
         simplify_expression: bool = True,
         slice_pushdown: bool = True,
         common_subplan_elimination: bool = True,
+        allow_streaming: bool = False,
     ) -> str | None:
         """
         Show a plot of the query plan. Note that you should have graphviz installed.
@@ -621,6 +624,10 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
             Slice pushdown optimization.
         common_subplan_elimination
             Will try to cache branching subplans that occur on self-joins or unions.
+        common_subplan_elimination
+            Will try to cache branching subplans that occur on self-joins or unions.
+        allow_streaming
+            Run parts of the query in a streaming fashion (this is in an alpha state)
 
         """
         _ldf = self._ldf.optimization_toggle(
@@ -630,6 +637,7 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
             simplify_expression,
             slice_pushdown,
             common_subplan_elimination,
+            allow_streaming,
         )
 
         dot = _ldf.to_dot(optimized)
@@ -750,6 +758,7 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
         show_plot: bool = False,
         truncate_nodes: int = 0,
         figsize: tuple[int, int] = (18, 8),
+        allow_streaming: bool = False,
     ) -> tuple[pli.DataFrame, pli.DataFrame]:
         """
         Profile a LazyFrame.
@@ -783,6 +792,8 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
             characters.
         figsize
             matplotlib figsize of the profiling plot
+        allow_streaming
+            Run parts of the query in a streaming fashion (this is in an alpha state)
 
         Returns
         -------
@@ -800,6 +811,7 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
             simplify_expression,
             slice_pushdown,
             common_subplan_elimination,
+            allow_streaming,
         )
         df, timings = ldf.profile()
         (df, timings) = pli.wrap_df(df), pli.wrap_df(timings)
@@ -857,6 +869,7 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
         no_optimization: bool = False,
         slice_pushdown: bool = True,
         common_subplan_elimination: bool = True,
+        allow_streaming: bool = False,
     ) -> pli.DataFrame:
         """
         Collect into a DataFrame.
@@ -883,6 +896,8 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
             Slice pushdown optimization.
         common_subplan_elimination
             Will try to cache branching subplans that occur on self-joins or unions.
+        allow_streaming
+            Run parts of the query in a streaming fashion (this is in an alpha state)
 
         Returns
         -------
@@ -902,6 +917,7 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
             simplify_expression,
             slice_pushdown,
             common_subplan_elimination,
+            allow_streaming,
         )
         return pli.wrap_df(ldf.collect())
 
@@ -916,6 +932,7 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
         no_optimization: bool = False,
         slice_pushdown: bool = True,
         common_subplan_elimination: bool = True,
+        allow_streaming: bool = False,
     ) -> pli.DataFrame:
         """
         Collect a small number of rows for debugging purposes.
@@ -949,6 +966,8 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
             Slice pushdown optimization
         common_subplan_elimination
             Will try to cache branching subplans that occur on self-joins or unions.
+        allow_streaming
+            Run parts of the query in a streaming fashion (this is in an alpha state)
 
         Returns
         -------
@@ -968,6 +987,7 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
             simplify_expression,
             slice_pushdown,
             common_subplan_elimination,
+            allow_streaming,
         )
         return pli.wrap_df(ldf.fetch(n_rows))
 
@@ -1128,7 +1148,7 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
 
     def groupby(
         self: LDF,
-        by: str | list[str] | pli.Expr | list[pli.Expr],
+        by: str | Sequence[str] | pli.Expr | Sequence[pli.Expr],
         maintain_order: bool = False,
     ) -> LazyGroupBy[LDF]:
         """
@@ -1181,7 +1201,7 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
         period: str,
         offset: str | None = None,
         closed: ClosedWindow = "right",
-        by: str | list[str] | pli.Expr | list[pli.Expr] | None = None,
+        by: str | Sequence[str] | pli.Expr | Sequence[pli.Expr] | None = None,
     ) -> LazyGroupBy[LDF]:
         """
         Create rolling groups based on a time column.
@@ -1301,7 +1321,7 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
         truncate: bool = True,
         include_boundaries: bool = False,
         closed: ClosedWindow = "left",
-        by: str | list[str] | pli.Expr | list[pli.Expr] | None = None,
+        by: str | Sequence[str] | pli.Expr | Sequence[pli.Expr] | None = None,
     ) -> LazyGroupBy[LDF]:
         """
         Group based on a time value (or index value of type Int32, Int64).
@@ -1400,9 +1420,9 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
         left_on: str | None = None,
         right_on: str | None = None,
         on: str | None = None,
-        by_left: str | list[str] | None = None,
-        by_right: str | list[str] | None = None,
-        by: str | list[str] | None = None,
+        by_left: str | Sequence[str] | None = None,
+        by_right: str | Sequence[str] | None = None,
+        by: str | Sequence[str] | None = None,
         strategy: AsofJoinStrategy = "backward",
         suffix: str = "_right",
         tolerance: str | int | float | None = None,
@@ -1487,13 +1507,13 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
         if left_on is None or right_on is None:
             raise ValueError("You should pass the column to join on as an argument.")
 
-        by_left_: list[str] | None
+        by_left_: Sequence[str] | None
         if isinstance(by_left, str):
             by_left_ = [by_left]
         else:
             by_left_ = by_left
 
-        by_right_: list[str] | None
+        by_right_: Sequence[str] | None
         if isinstance(by_right, (str, pli.Expr)):
             by_right_ = [by_right]
         else:
@@ -2354,7 +2374,7 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
 
     def explode(
         self: LDF,
-        columns: str | list[str] | pli.Expr | list[pli.Expr],
+        columns: str | Sequence[str] | pli.Expr | Sequence[pli.Expr],
     ) -> LDF:
         """
         Explode lists to long format.
