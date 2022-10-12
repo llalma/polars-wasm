@@ -12,8 +12,15 @@ import pyarrow as pa
 import pytest
 
 import polars as pl
+from polars.datatypes import DTYPE_TEMPORAL_UNITS
 from polars.exceptions import NoRowsReturned, TooManyRowsReturned
 from polars.testing import assert_frame_equal, assert_series_equal, columns
+
+if sys.version_info >= (3, 9):
+    from zoneinfo import ZoneInfo
+else:
+    from backports.zoneinfo import ZoneInfo
+
 
 if TYPE_CHECKING:
     from polars.internals.type_aliases import JoinStrategy
@@ -1374,8 +1381,12 @@ def test_hashing_on_python_objects() -> None:
 
 
 def test_unique_unit_rows() -> None:
-    # simply test if we don't panic.
-    pl.DataFrame({"a": [1], "b": [None]}).unique(subset="a")
+    df = pl.DataFrame({"a": [1], "b": [None]})
+
+    # 'unique' one-row frame should be equal to the original frame
+    assert df.frame_equal(df.unique(subset="a"))
+    for col in df.columns:
+        assert df.n_unique(subset=[col]) == 1
 
 
 def test_panic() -> None:
@@ -1734,7 +1745,30 @@ def test_is_duplicated() -> None:
 
 def test_is_unique() -> None:
     df = pl.DataFrame({"foo": [1, 2, 2], "bar": [6, 7, 7]})
+
     assert df.is_unique().series_equal(pl.Series("", [True, False, False]))
+    assert df.unique(maintain_order=True).rows() == [(1, 6), (2, 7)]
+    assert df.n_unique() == 2
+
+
+def test_n_unique_subsets() -> None:
+    df = pl.DataFrame(
+        {
+            "a": [1, 1, 2, 3, 4, 5],
+            "b": [0.5, 0.5, 1.0, 2.0, 3.0, 3.0],
+            "c": [True, True, True, False, True, True],
+        }
+    )
+    # omitting 'subset' counts unique rows
+    assert df.n_unique() == 5
+
+    # providing it counts unique col/expr subsets
+    assert df.n_unique(subset=["b", "c"]) == 4
+    assert df.n_unique(subset=pl.col("c")) == 2
+    assert (
+        df.n_unique(subset=[(pl.col("a") // 2), (pl.col("c") | (pl.col("b") >= 2))])
+        == 3
+    )
 
 
 def test_sample() -> None:
@@ -2359,3 +2393,27 @@ def test_union_with_aliases_4770() -> None:
     ).filter(pl.col("x").is_not_null())
 
     assert lf.collect()["x"].to_list() == [1, 3, 4]
+
+
+def test_init_with_timezone() -> None:
+    for tu in DTYPE_TEMPORAL_UNITS | frozenset([None]):
+        df = pl.DataFrame(
+            data={
+                "d1": [datetime(2022, 10, 12, 12, 30)],
+                "d2": [datetime(2022, 10, 12, 12, 30)],
+            },
+            columns=[
+                ("d1", pl.Datetime(tu, "America/New_York")),  # type: ignore[arg-type]
+                ("d2", pl.Datetime(tu, "Asia/Tokyo")),  # type: ignore[arg-type]
+            ],
+        )
+        # note: setting timezone doesn't change the underlying/physical value...
+        assert (df["d1"].to_physical() == df["d2"].to_physical()).all()
+
+        # ...but (as expected) it _does_ change the interpretation of that value
+        assert df.rows() == [
+            (
+                datetime(2022, 10, 12, 8, 30, tzinfo=ZoneInfo("America/New_York")),
+                datetime(2022, 10, 12, 21, 30, tzinfo=ZoneInfo("Asia/Tokyo")),
+            )
+        ]
