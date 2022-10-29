@@ -8,8 +8,10 @@
 //!
 #[cfg(feature = "serde")]
 mod _serde;
+mod aliases;
 mod dtype;
 mod field;
+mod time_unit;
 
 use std::cmp::Ordering;
 use std::fmt::{Display, Formatter};
@@ -17,6 +19,7 @@ use std::hash::{Hash, Hasher};
 use std::ops::{Add, AddAssign, Div, Mul, Rem, Sub, SubAssign};
 
 use ahash::RandomState;
+pub use aliases::*;
 use arrow::compute::arithmetics::basic::NativeArithmetics;
 use arrow::compute::comparison::Simd8;
 #[cfg(feature = "dtype-categorical")]
@@ -34,6 +37,7 @@ use serde::de::{EnumAccess, Error, Unexpected, VariantAccess, Visitor};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "serde")]
 use serde::{Deserializer, Serializer};
+pub use time_unit::*;
 
 pub use crate::chunked_array::logical::*;
 #[cfg(feature = "object")]
@@ -632,6 +636,7 @@ impl<'a> AnyValue<'a> {
         }
     }
 
+    #[inline]
     pub fn try_extract<T: NumCast>(&self) -> PolarsResult<T> {
         self.extract().ok_or_else(|| {
             PolarsError::ComputeError(
@@ -851,7 +856,7 @@ impl<'a> From<AnyValue<'a>> for Option<i64> {
         match val {
             Null => None,
             Int32(v) => Some(v as i64),
-            Int64(v) => Some(v as i64),
+            Int64(v) => Some(v),
             UInt32(v) => Some(v as i64),
             _ => todo!(),
         }
@@ -927,91 +932,6 @@ impl PartialOrd for AnyValue<'_> {
         }
     }
 }
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(
-    any(feature = "serde-lazy", feature = "serde"),
-    derive(Serialize, Deserialize)
-)]
-pub enum TimeUnit {
-    Nanoseconds,
-    Microseconds,
-    Milliseconds,
-}
-
-impl From<&ArrowTimeUnit> for TimeUnit {
-    fn from(tu: &ArrowTimeUnit) -> Self {
-        match tu {
-            ArrowTimeUnit::Nanosecond => TimeUnit::Nanoseconds,
-            ArrowTimeUnit::Microsecond => TimeUnit::Microseconds,
-            ArrowTimeUnit::Millisecond => TimeUnit::Milliseconds,
-            // will be cast
-            ArrowTimeUnit::Second => TimeUnit::Milliseconds,
-        }
-    }
-}
-
-impl Display for TimeUnit {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TimeUnit::Nanoseconds => {
-                write!(f, "ns")
-            }
-            TimeUnit::Microseconds => {
-                write!(f, "μs")
-            }
-            TimeUnit::Milliseconds => {
-                write!(f, "ms")
-            }
-        }
-    }
-}
-
-impl TimeUnit {
-    pub fn to_ascii(self) -> &'static str {
-        use TimeUnit::*;
-        match self {
-            Nanoseconds => "ns",
-            Microseconds => "us",
-            Milliseconds => "ms",
-        }
-    }
-
-    pub fn to_arrow(self) -> ArrowTimeUnit {
-        match self {
-            TimeUnit::Nanoseconds => ArrowTimeUnit::Nanosecond,
-            TimeUnit::Microseconds => ArrowTimeUnit::Microsecond,
-            TimeUnit::Milliseconds => ArrowTimeUnit::Millisecond,
-        }
-    }
-}
-
-#[cfg(feature = "private")]
-pub type PlHashMap<K, V> = hashbrown::HashMap<K, V, RandomState>;
-#[cfg(feature = "private")]
-pub type PlHashSet<V> = hashbrown::HashSet<V, RandomState>;
-#[cfg(feature = "private")]
-pub type PlIndexMap<K, V> = indexmap::IndexMap<K, V, RandomState>;
-#[cfg(feature = "private")]
-pub type PlIndexSet<K> = indexmap::IndexSet<K, RandomState>;
-
-#[cfg(not(feature = "bigidx"))]
-pub type IdxCa = UInt32Chunked;
-#[cfg(feature = "bigidx")]
-pub type IdxCa = UInt64Chunked;
-pub use polars_arrow::index::{IdxArr, IdxSize};
-
-#[cfg(not(feature = "bigidx"))]
-pub const IDX_DTYPE: DataType = DataType::UInt32;
-#[cfg(feature = "bigidx")]
-pub const IDX_DTYPE: DataType = DataType::UInt64;
-
-#[cfg(not(feature = "bigidx"))]
-pub type IdxType = UInt32Type;
-#[cfg(feature = "bigidx")]
-pub type IdxType = UInt64Type;
-
-pub const NULL_DTYPE: DataType = DataType::Int32;
 
 #[cfg(test)]
 mod test {

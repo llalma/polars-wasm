@@ -89,16 +89,22 @@ def test_sorted_merge_joins() -> None:
             df_b = df_b.select(pl.all().reverse())
 
         join_strategies: list[JoinStrategy] = ["left", "inner"]
-        for how in join_strategies:
-            # hash join
-            out_hash_join = df_a.join(df_b, on="a", how=how)
+        for cast_to in [int, str, float]:
+            for how in join_strategies:
+                df_a_ = df_a.with_column(pl.col("a").cast(cast_to))
+                df_b_ = df_b.with_column(pl.col("a").cast(cast_to))
 
-            # sorted merge join
-            out_sorted_merge_join = df_a.with_column(
-                pl.col("a").set_sorted(reverse)
-            ).join(df_b.with_column(pl.col("a").set_sorted(reverse)), on="a", how=how)
+                # hash join
+                out_hash_join = df_a_.join(df_b_, on="a", how=how)
 
-            assert out_hash_join.frame_equal(out_sorted_merge_join)
+                # sorted merge join
+                out_sorted_merge_join = df_a_.with_column(
+                    pl.col("a").set_sorted(reverse)
+                ).join(
+                    df_b_.with_column(pl.col("a").set_sorted(reverse)), on="a", how=how
+                )
+
+                assert out_hash_join.frame_equal(out_sorted_merge_join)
 
 
 def test_join_negative_integers() -> None:
@@ -189,6 +195,82 @@ def test_join_asof_tolerance() -> None:
         "stock": ["A", "B", "B", "C"],
         "trade": [101, 299, 301, 500],
         "quote": [100, None, 300, None],
+    }
+
+
+def test_join_asof_tolerance_forward() -> None:
+    df_quotes = pl.DataFrame(
+        {
+            "time": [
+                datetime(2020, 1, 1, 9, 0, 0),
+                datetime(2020, 1, 1, 9, 0, 2),
+                datetime(2020, 1, 1, 9, 0, 4),
+                datetime(2020, 1, 1, 9, 0, 6),
+                datetime(2020, 1, 1, 9, 0, 7),
+            ],
+            "stock": ["A", "B", "C", "A", "D"],
+            "quote": [100, 300, 501, 102, 10],
+        }
+    )
+
+    df_trades = pl.DataFrame(
+        {
+            "time": [
+                datetime(2020, 1, 1, 9, 0, 2),
+                datetime(2020, 1, 1, 9, 0, 1),
+                datetime(2020, 1, 1, 9, 0, 3),
+                datetime(2020, 1, 1, 9, 0, 6),
+                datetime(2020, 1, 1, 9, 0, 7),
+            ],
+            "stock": ["A", "B", "B", "C", "D"],
+            "trade": [101, 299, 301, 500, 10],
+        }
+    )
+
+    assert df_quotes.join_asof(
+        df_trades, on="time", by="stock", tolerance="2s", strategy="forward"
+    ).to_dict(False) == {
+        "time": [
+            datetime(2020, 1, 1, 9, 0, 0),
+            datetime(2020, 1, 1, 9, 0, 2),
+            datetime(2020, 1, 1, 9, 0, 4),
+            datetime(2020, 1, 1, 9, 0, 6),
+            datetime(2020, 1, 1, 9, 0, 7),
+        ],
+        "stock": ["A", "B", "C", "A", "D"],
+        "quote": [100, 300, 501, 102, 10],
+        "trade": [101, 301, 500, None, 10],
+    }
+
+    assert df_quotes.join_asof(
+        df_trades, on="time", by="stock", tolerance="1s", strategy="forward"
+    ).to_dict(False) == {
+        "time": [
+            datetime(2020, 1, 1, 9, 0, 0),
+            datetime(2020, 1, 1, 9, 0, 2),
+            datetime(2020, 1, 1, 9, 0, 4),
+            datetime(2020, 1, 1, 9, 0, 6),
+            datetime(2020, 1, 1, 9, 0, 7),
+        ],
+        "stock": ["A", "B", "C", "A", "D"],
+        "quote": [100, 300, 501, 102, 10],
+        "trade": [None, 301, None, None, 10],
+    }
+
+    # Sanity check that this gives us equi-join
+    assert df_quotes.join_asof(
+        df_trades, on="time", by="stock", tolerance="0s", strategy="forward"
+    ).to_dict(False) == {
+        "time": [
+            datetime(2020, 1, 1, 9, 0, 0),
+            datetime(2020, 1, 1, 9, 0, 2),
+            datetime(2020, 1, 1, 9, 0, 4),
+            datetime(2020, 1, 1, 9, 0, 6),
+            datetime(2020, 1, 1, 9, 0, 7),
+        ],
+        "stock": ["A", "B", "C", "A", "D"],
+        "quote": [100, 300, 501, 102, 10],
+        "trade": [None, None, None, None, 10],
     }
 
 
@@ -525,3 +607,17 @@ def test_jit_sort_joins() -> None:
         a = pl.from_pandas(pd_result).with_column(pl.all().cast(int)).sort(["a", "b"])
         assert a.frame_equal(pl_result, null_equal=True)
         assert pl_result["a"].flags["SORTED_ASC"]
+
+
+def test_asof_join_schema_5211() -> None:
+    df1 = pl.DataFrame({"today": [1, 2]})
+
+    df2 = pl.DataFrame({"next_friday": [1, 2]})
+
+    assert (
+        df1.lazy()
+        .join_asof(
+            df2.lazy(), left_on="today", right_on="next_friday", strategy="forward"
+        )
+        .schema
+    ) == {"today": pl.Int64, "next_friday": pl.Int64}

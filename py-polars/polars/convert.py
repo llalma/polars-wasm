@@ -2,28 +2,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Mapping, Sequence, overload
 
+from polars.datatypes import Schema
+from polars.dependencies import numpy as np
+from polars.dependencies import pandas as pd
+from polars.dependencies import pyarrow as pa
 from polars.internals import DataFrame, Series
-
-try:
-    import numpy as np
-
-    _NUMPY_AVAILABLE = True
-except ImportError:
-    _NUMPY_AVAILABLE = False
-
-try:
-    import pyarrow as pa
-
-    _PYARROW_AVAILABLE = True
-except ImportError:
-    _PYARROW_AVAILABLE = False
-
-try:
-    import pandas as pd
-
-    _PANDAS_AVAILABLE = True
-except ImportError:
-    _PANDAS_AVAILABLE = False
 
 if TYPE_CHECKING:
     from polars.internals.type_aliases import Orientation
@@ -72,7 +55,10 @@ def from_dict(
 
 
 def from_dicts(
-    dicts: Sequence[dict[str, Any]], infer_schema_length: int | None = 50
+    dicts: Sequence[dict[str, Any]],
+    infer_schema_length: int | None = 50,
+    *,
+    schema: Schema | None = None,
 ) -> DataFrame:
     """
     Construct a DataFrame from a sequence of dictionaries. This operation clones data.
@@ -84,6 +70,8 @@ def from_dicts(
     infer_schema_length
         How many dictionaries/rows to scan to determine the data types
         if set to `None` all rows are scanned. This will be slow.
+    schema
+        Schema that (partially) overwrites the inferred schema.
 
     Returns
     -------
@@ -107,8 +95,39 @@ def from_dicts(
     │ 3   ┆ 6   │
     └─────┴─────┘
 
+    >>> # overwrite first column name and dtype
+    >>> pl.from_dicts(data, schema={"c": pl.Int32})
+    shape: (3, 2)
+    ┌─────┬─────┐
+    │ c   ┆ b   │
+    │ --- ┆ --- │
+    │ i32 ┆ i64 │
+    ╞═════╪═════╡
+    │ 1   ┆ 4   │
+    ├╌╌╌╌╌┼╌╌╌╌╌┤
+    │ 2   ┆ 5   │
+    ├╌╌╌╌╌┼╌╌╌╌╌┤
+    │ 3   ┆ 6   │
+    └─────┴─────┘
+
+    >>> # let polars infer the dtypes
+    >>> # but inform about a 3rd column
+    >>> pl.from_dicts(data, schema={"a": pl.Unknown, "b": pl.Unknown, "c": pl.Int32})
+    shape: (3, 3)
+    ┌─────┬─────┬──────┐
+    │ a   ┆ b   ┆ c    │
+    │ --- ┆ --- ┆ ---  │
+    │ i64 ┆ i64 ┆ i32  │
+    ╞═════╪═════╪══════╡
+    │ 1   ┆ 4   ┆ null │
+    ├╌╌╌╌╌┼╌╌╌╌╌┼╌╌╌╌╌╌┤
+    │ 2   ┆ 5   ┆ null │
+    ├╌╌╌╌╌┼╌╌╌╌╌┼╌╌╌╌╌╌┤
+    │ 3   ┆ 6   ┆ null │
+    └─────┴─────┴──────┘
+
     """
-    return DataFrame._from_dicts(dicts, infer_schema_length)
+    return DataFrame._from_dicts(dicts, infer_schema_length, schema)
 
 
 def from_records(
@@ -211,8 +230,6 @@ def from_numpy(
     └─────┴─────┘
 
     """
-    if not _NUMPY_AVAILABLE:
-        raise ImportError("'numpy' is required when using from_numpy().")
     return DataFrame._from_numpy(data, columns=columns, orient=orient)
 
 
@@ -272,8 +289,6 @@ def from_arrow(
     ]
 
     """
-    if not _PYARROW_AVAILABLE:
-        raise ImportError("'pyarrow' is required when using from_arrow().")
     if isinstance(a, pa.Table):
         return DataFrame._from_arrow(a, rechunk=rechunk)
     elif isinstance(a, (pa.Array, pa.ChunkedArray)):
@@ -359,11 +374,6 @@ def from_pandas(
     ]
 
     """
-    if not _PYARROW_AVAILABLE:
-        raise ImportError("'pyarrow' is required when using from_pandas().")
-    if not _PANDAS_AVAILABLE:
-        raise ImportError("'pandas' is required when using from_pandas().")
-
     if isinstance(df, (pd.Series, pd.DatetimeIndex)):
         return Series._from_pandas("", df, nan_to_none=nan_to_none)
     elif isinstance(df, pd.DataFrame):

@@ -1,5 +1,6 @@
 use super::*;
-use crate::csv::read_impl::BatchedCsvReader;
+use crate::csv::read_impl::{to_batched_owned, BatchedCsvReader, OwnedBatchedCsvReader};
+use crate::csv::utils::infer_file_schema;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -110,7 +111,7 @@ where
     delimiter: Option<u8>,
     has_header: bool,
     ignore_parser_errors: bool,
-    schema: Option<&'a Schema>,
+    pub(crate) schema: Option<&'a Schema>,
     encoding: CsvEncoding,
     n_threads: Option<usize>,
     path: Option<PathBuf>,
@@ -368,36 +369,33 @@ impl<'a, R: MmapBytesReader + 'a> CsvReader<'a, R> {
         let mut _has_categorical = false;
 
         #[allow(clippy::unnecessary_filter_map)]
-        let fields: Vec<_> = overwriting_schema
-            .iter_fields()
-            .filter_map(|mut fld| {
-                use DataType::*;
-                match fld.data_type() {
-                    Time => {
-                        to_cast.push(fld);
-                        // let inference decide the column type
-                        None
-                    }
-                    Int8 | Int16 | UInt8 | UInt16 => {
-                        // We have not compiled these buffers, so we cast them later.
-                        to_cast.push(fld.clone());
-                        fld.coerce(DataType::Int32);
-                        Some(fld)
-                    }
-                    #[cfg(feature = "dtype-categorical")]
-                    Categorical(_) => {
-                        _has_categorical = true;
-                        Some(fld)
-                    }
-                    _ => Some(fld),
+        let fields = overwriting_schema.iter_fields().filter_map(|mut fld| {
+            use DataType::*;
+            match fld.data_type() {
+                Time => {
+                    to_cast.push(fld);
+                    // let inference decide the column type
+                    None
                 }
-            })
-            .collect();
+                Int8 | Int16 | UInt8 | UInt16 => {
+                    // We have not compiled these buffers, so we cast them later.
+                    to_cast.push(fld.clone());
+                    fld.coerce(DataType::Int32);
+                    Some(fld)
+                }
+                #[cfg(feature = "dtype-categorical")]
+                Categorical(_) => {
+                    _has_categorical = true;
+                    Some(fld)
+                }
+                _ => Some(fld),
+            }
+        });
         let schema = Schema::from(fields);
         (schema, to_cast, _has_categorical)
     }
 
-    pub fn batched(&'a mut self) -> PolarsResult<BatchedCsvReader<'a>> {
+    pub fn batched_borrowed(&'a mut self) -> PolarsResult<BatchedCsvReader<'a>> {
         if let Some(schema) = self.schema_overwrite {
             let (schema, to_cast, has_cat) = self.prepare_schema_overwrite(schema);
             self.owned_schema = Some(Box::new(schema));
@@ -417,6 +415,34 @@ impl<'a, R: MmapBytesReader + 'a> CsvReader<'a, R> {
         } else {
             let csv_reader = self.core_reader(self.schema, vec![])?;
             csv_reader.batched(false)
+        }
+    }
+}
+
+impl<'a> CsvReader<'a, Box<dyn MmapBytesReader>> {
+    pub fn batched(mut self, schema: Option<SchemaRef>) -> PolarsResult<OwnedBatchedCsvReader> {
+        match schema {
+            Some(schema) => Ok(to_batched_owned(self, schema)),
+            None => {
+                let reader_bytes = get_reader_bytes(&mut self.reader)?;
+
+                let (inferred_schema, _) = infer_file_schema(
+                    &reader_bytes,
+                    self.delimiter.unwrap_or(b','),
+                    self.max_records,
+                    self.has_header,
+                    None,
+                    &mut self.skip_rows_before_header,
+                    self.skip_rows_after_header,
+                    self.comment_char,
+                    self.quote_char,
+                    self.eol_char,
+                    self.null_values.as_ref(),
+                    self.parse_dates,
+                )?;
+                let schema = Arc::new(inferred_schema);
+                Ok(to_batched_owned(self, schema))
+            }
         }
     }
 }
@@ -481,6 +507,20 @@ where
             let mut csv_reader = self.core_reader(Some(&schema), to_cast)?;
             csv_reader.as_df()?
         } else {
+            #[cfg(feature = "dtype-categorical")]
+            {
+                let has_cat = self
+                    .schema
+                    .map(|schema| {
+                        schema
+                            .iter_dtypes()
+                            .any(|dtype| matches!(dtype, DataType::Categorical(_)))
+                    })
+                    .unwrap_or(false);
+                if has_cat {
+                    _cat_lock = Some(polars_core::IUseStringCache::new())
+                }
+            }
             let mut csv_reader = self.core_reader(self.schema, vec![])?;
             csv_reader.as_df()?
         };
@@ -502,11 +542,10 @@ where
             let fixed_schema = match (schema_overwrite, dtype_overwrite) {
                 (Some(schema), _) => Cow::Borrowed(schema),
                 (None, Some(dtypes)) => {
-                    let fields: Vec<_> = dtypes
+                    let fields = dtypes
                         .iter()
                         .zip(df.get_column_names())
-                        .map(|(dtype, name)| Field::new(name, dtype.clone()))
-                        .collect();
+                        .map(|(dtype, name)| Field::new(name, dtype.clone()));
 
                     Cow::Owned(Schema::from(fields))
                 }

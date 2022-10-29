@@ -25,7 +25,6 @@ impl FunctionExpr {
         };
 
         // map all dtypes
-        #[cfg(feature = "list")]
         let map_dtypes = |func: &dyn Fn(&[&DataType]) -> DataType| {
             let mut fld = fields[0].clone();
             let dtypes = fields.iter().map(|fld| fld.data_type()).collect::<Vec<_>>();
@@ -57,8 +56,18 @@ impl FunctionExpr {
             Ok(first)
         };
 
+        let inner_type_list = || {
+            let mut first = fields[0].clone();
+            let dt = first
+                .data_type()
+                .inner_dtype()
+                .cloned()
+                .unwrap_or(DataType::Unknown);
+            first.coerce(dt);
+            Ok(first)
+        };
+
         // inner super type of lists
-        #[cfg(feature = "list")]
         let inner_super_type_list = || {
             map_dtypes(&|dts| {
                 let mut super_type_inner = None;
@@ -80,6 +89,19 @@ impl FunctionExpr {
                     }
                 }
                 DataType::List(Box::new(super_type_inner.unwrap()))
+            })
+        };
+
+        #[cfg(feature = "timezones")]
+        let cast_tz = |tz: &TimeZone| {
+            try_map_dtype(&|dt| {
+                if let DataType::Datetime(tu, _) = dt {
+                    Ok(DataType::Datetime(*tu, Some(tz.clone())))
+                } else {
+                    Err(PolarsError::SchemaMisMatch(
+                        format!("expected Datetime got {:?}", dt).into(),
+                    ))
+                }
             })
         };
 
@@ -125,18 +147,11 @@ impl FunctionExpr {
                     Month | Quarter | Week | WeekDay | Day | OrdinalDay | Hour | Minute
                     | Millisecond | Microsecond | Nanosecond | Second => DataType::UInt32,
                     TimeStamp(_) => DataType::Int64,
+                    Truncate(..) => same_type().unwrap().dtype,
+                    Round(..) => same_type().unwrap().dtype,
                     #[cfg(feature = "timezones")]
-                    CastTimezone(tz) => {
-                        return try_map_dtype(&|dt| {
-                            if let DataType::Datetime(tu, _) = dt {
-                                Ok(DataType::Datetime(*tu, Some(tz.clone())))
-                            } else {
-                                Err(PolarsError::SchemaMisMatch(
-                                    format!("expected Datetime got {:?}", dt).into(),
-                                ))
-                            }
-                        })
-                    }
+                    CastTimezone(tz) | TzLocalize(tz) => return cast_tz(tz),
+                    DateRange { .. } => return super_type(),
                 };
                 with_dtype(dtype)
             }
@@ -154,7 +169,6 @@ impl FunctionExpr {
             Nan(n) => n.get_field(fields),
             #[cfg(feature = "round_series")]
             Clip { .. } => same_type(),
-            #[cfg(feature = "list")]
             ListExpr(l) => {
                 use ListFunction::*;
                 match l {
@@ -162,6 +176,7 @@ impl FunctionExpr {
                     #[cfg(feature = "is_in")]
                     Contains => with_dtype(DataType::Boolean),
                     Slice => same_type(),
+                    Get => inner_type_list(),
                 }
             }
             #[cfg(feature = "dtype-struct")]
@@ -196,6 +211,29 @@ impl FunctionExpr {
             TopK { .. } => same_type(),
             Shift(..) | Reverse => same_type(),
             IsNotNull | IsNull | Not | IsUnique | IsDuplicated => with_dtype(DataType::Boolean),
+            ShrinkType => {
+                // we return the smallest type this can return
+                // this might not be correct once the actual data
+                // comes in, but if we set the smallest datatype
+                // we have the least chance that the smaller dtypes
+                // get cast to larger types in type-coercion
+                // this will lead to an incorrect schema in polars
+                // but we because only the numeric types deviate in
+                // bit size this will likely not lead to issues
+                map_dtype(&|dt| {
+                    if dt.is_numeric() {
+                        if dt.is_float() {
+                            DataType::Float32
+                        } else if dt.is_unsigned() {
+                            DataType::Int8
+                        } else {
+                            DataType::UInt8
+                        }
+                    } else {
+                        dt.clone()
+                    }
+                })
+            }
         }
     }
 }

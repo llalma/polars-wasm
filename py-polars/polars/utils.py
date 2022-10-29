@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Callable, Iterable, Sequence, TypeVar
 
 import polars.internals as pli
 from polars.datatypes import DataType, Date, Datetime, PolarsDataType, is_polars_dtype
+from polars.dependencies import _ZONEINFO_AVAILABLE, zoneinfo
 
 try:
     from polars.polars import PyExpr
@@ -25,18 +26,6 @@ if sys.version_info >= (3, 10):
 else:
     from typing_extensions import ParamSpec, TypeGuard
 
-
-if sys.version_info >= (3, 9):
-    import zoneinfo
-
-    _ZONEINFO_AVAILABLE = True
-else:
-    try:
-        from backports import zoneinfo
-
-        _ZONEINFO_AVAILABLE = True
-    except ImportError:
-        _ZONEINFO_AVAILABLE = False
 
 if TYPE_CHECKING:
     from polars.internals.type_aliases import SizeUnit, TimeUnit
@@ -213,7 +202,7 @@ def _to_python_datetime(
         dt += timedelta(seconds=value * 3600 * 24)
         return dt.date()
     elif dtype == Datetime:
-        if tz is None or tz == "" or tz == "UTC":
+        if tz is None or tz == "":
             if tu == "ns":
                 # nanoseconds to seconds
                 dt = EPOCH + timedelta(microseconds=value / 1000)
@@ -225,18 +214,26 @@ def _to_python_datetime(
             else:
                 raise ValueError(f"tu must be one of {{'ns', 'us', 'ms'}}, got {tu}")
         else:
+            if not _ZONEINFO_AVAILABLE:
+                raise ImportError(
+                    "Install polars[timezone] to handle datetimes with timezones."
+                )
+
+            utc = zoneinfo.ZoneInfo("UTC")
             if tu == "ns":
                 # nanoseconds to seconds
-                dt = datetime.fromtimestamp(0) + timedelta(microseconds=value / 1000)
+                dt = datetime.fromtimestamp(0, tz=utc) + timedelta(
+                    microseconds=value / 1000
+                )
             elif tu == "us":
-                dt = datetime.fromtimestamp(0) + timedelta(microseconds=value)
+                dt = datetime.fromtimestamp(0, tz=utc) + timedelta(microseconds=value)
             elif tu == "ms":
                 # milliseconds to seconds
-                dt = datetime.fromtimestamp(value / 1000)
+                dt = datetime.fromtimestamp(value / 1000, tz=utc)
             else:
                 raise ValueError(f"tu must be one of {{'ns', 'us', 'ms'}}, got {tu}")
-
             return _localize(dt, tz)
+
         return dt
     else:
         raise NotImplementedError  # pragma: no cover
@@ -248,7 +245,6 @@ def _localize(dt: datetime, tz: str) -> datetime:
             "backports.zoneinfo is not installed. Please run "
             "`pip install backports.zoneinfo`."
         )
-
     return dt.astimezone(zoneinfo.ZoneInfo(tz))
 
 
@@ -271,7 +267,7 @@ def format_path(path: str | Path) -> str:
 
 
 def threadpool_size() -> int:
-    """Get the size of polars; thread pool."""
+    """Get the size of polars' thread pool."""
     return _pool_size()
 
 

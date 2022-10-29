@@ -14,3 +14,4 @@ rayon.workspace = true
 
 [features]
 bigidx = []
+nightly = []

@@ -506,6 +506,10 @@ impl PyExpr {
         self.clone().inner.product().into()
     }
 
+    pub fn shrink_dtype(&self) -> PyExpr {
+        self.inner.clone().shrink_dtype().into()
+    }
+
     pub fn str_parse_date(&self, fmt: Option<String>, strict: bool, exact: bool) -> PyExpr {
         self.inner
             .clone()
@@ -601,7 +605,19 @@ impl PyExpr {
         self.clone()
             .inner
             .map(function, GetOutput::from_type(DataType::UInt32))
-            .with_fmt("str.len")
+            .with_fmt("str.lengths")
+            .into()
+    }
+
+    pub fn str_n_chars(&self) -> PyExpr {
+        let function = |s: Series| {
+            let ca = s.utf8()?;
+            Ok(ca.str_n_chars().into_series())
+        };
+        self.clone()
+            .inner
+            .map(function, GetOutput::from_type(DataType::UInt32))
+            .with_fmt("str.n_chars")
             .into()
     }
 
@@ -890,6 +906,18 @@ impl PyExpr {
         self.inner.clone().dt().cast_time_zone(tz).into()
     }
 
+    pub fn dt_tz_localize(&self, tz: String) -> PyExpr {
+        self.inner.clone().dt().tz_localize(tz).into()
+    }
+
+    pub fn dt_truncate(&self, every: &str, offset: &str) -> PyExpr {
+        self.inner.clone().dt().truncate(every, offset).into()
+    }
+
+    pub fn dt_round(&self, every: &str, offset: &str) -> PyExpr {
+        self.inner.clone().dt().round(every, offset).into()
+    }
+
     pub fn rolling_apply(
         &self,
         py: Python,
@@ -1024,7 +1052,12 @@ impl PyExpr {
             .into()
     }
 
-    pub fn map(&self, lambda: PyObject, output_type: &PyAny, agg_list: bool) -> PyExpr {
+    pub fn map(
+        &self,
+        lambda: PyObject,
+        output_type: Option<Wrap<DataType>>,
+        agg_list: bool,
+    ) -> PyExpr {
         map_single(self, lambda, output_type, agg_list)
     }
 
@@ -1282,7 +1315,10 @@ impl PyExpr {
         self.inner
             .clone()
             .arr()
-            .sort(reverse)
+            .sort(SortOptions {
+                descending: reverse,
+                ..Default::default()
+            })
             .with_fmt("arr.sort")
             .into()
     }
@@ -1305,8 +1341,8 @@ impl PyExpr {
             .into()
     }
 
-    fn lst_get(&self, index: i64) -> Self {
-        self.inner.clone().arr().get(index).into()
+    fn lst_get(&self, index: PyExpr) -> Self {
+        self.inner.clone().arr().get(index.inner).into()
     }
 
     fn lst_join(&self, separator: &str) -> Self {
@@ -1399,27 +1435,6 @@ impl PyExpr {
 
     fn cat_set_ordering(&self, ordering: Wrap<CategoricalOrdering>) -> Self {
         self.inner.clone().cat().set_ordering(ordering.0).into()
-    }
-
-    fn date_truncate(&self, every: &str, offset: &str) -> Self {
-        let every = Duration::parse(every);
-        let offset = Duration::parse(offset);
-        self.inner
-            .clone()
-            .apply(
-                move |s| match s.dtype() {
-                    DataType::Datetime(_, _) => {
-                        Ok(s.datetime().unwrap().truncate(every, offset).into_series())
-                    }
-                    DataType::Date => Ok(s.date().unwrap().truncate(every, offset).into_series()),
-                    dt => Err(PolarsError::ComputeError(
-                        format!("expected date/datetime got {:?}", dt).into(),
-                    )),
-                },
-                GetOutput::same_type(),
-            )
-            .with_fmt("dt.truncate")
-            .into()
     }
 
     pub fn reshape(&self, dims: Vec<i64>) -> Self {
@@ -1680,11 +1695,25 @@ pub fn fold(acc: PyExpr, lambda: PyObject, exprs: Vec<PyExpr>) -> PyExpr {
     polars::lazy::dsl::fold_exprs(acc.inner, func, exprs).into()
 }
 
+pub fn reduce(lambda: PyObject, exprs: Vec<PyExpr>) -> PyExpr {
+    let exprs = py_exprs_to_exprs(exprs);
+
+    let func = move |a: Series, b: Series| binary_lambda(&lambda, a, b);
+    polars::lazy::dsl::reduce_exprs(func, exprs).into()
+}
+
 pub fn cumfold(acc: PyExpr, lambda: PyObject, exprs: Vec<PyExpr>, include_init: bool) -> PyExpr {
     let exprs = py_exprs_to_exprs(exprs);
 
     let func = move |a: Series, b: Series| binary_lambda(&lambda, a, b);
     polars::lazy::dsl::cumfold_exprs(acc.inner, func, exprs, include_init).into()
+}
+
+pub fn cumreduce(lambda: PyObject, exprs: Vec<PyExpr>) -> PyExpr {
+    let exprs = py_exprs_to_exprs(exprs);
+
+    let func = move |a: Series, b: Series| binary_lambda(&lambda, a, b);
+    polars::lazy::dsl::cumreduce_exprs(func, exprs).into()
 }
 
 pub fn lit(value: &PyAny, allow_object: bool) -> PyResult<PyExpr> {

@@ -21,11 +21,8 @@ from polars.datatypes import (
     UInt32,
     UInt64,
 )
-from polars.testing import (
-    assert_frame_equal,
-    assert_series_equal,
-    verify_series_and_expr_api,
-)
+from polars.testing import assert_frame_equal, assert_series_equal
+from polars.testing._private import verify_series_and_expr_api
 
 if TYPE_CHECKING:
     from polars.internals.type_aliases import TimeUnit
@@ -57,7 +54,7 @@ def test_init_inputs(monkeypatch: Any) -> None:
         assert pl.Series(dtype_if_empty=pl.Utf8).dtype == pl.Utf8
         assert pl.Series([], dtype_if_empty=pl.UInt16).dtype == pl.UInt16
         # "== []" will be cast to empty Series with Utf8 dtype.
-        pl.testing.assert_series_equal(
+        assert_series_equal(
             pl.Series([], dtype_if_empty=pl.Utf8) == [], pl.Series("", dtype=pl.Boolean)
         )
         assert pl.Series(values=[True, False]).dtype == pl.Boolean
@@ -109,7 +106,7 @@ def test_init_inputs(monkeypatch: Any) -> None:
         pl.Series("bigint", [2**64])
 
     # numpy not available
-    monkeypatch.setattr(pl.internals.series.series, "_NUMPY_AVAILABLE", False)
+    monkeypatch.setattr(pl.internals.series.series, "_NUMPY_TYPE", lambda x: False)
     with pytest.raises(ValueError):
         pl.DataFrame(np.array([1, 2, 3]), columns=["a"])
 
@@ -388,12 +385,13 @@ def test_various() -> None:
 
 def test_filter_ops() -> None:
     a = pl.Series("a", range(20))
-    assert a[a > 1].len() == 18
-    assert a[a < 1].len() == 1
-    assert a[a <= 1].len() == 2
-    assert a[a >= 1].len() == 19
-    assert a[a == 1].len() == 1
-    assert a[a != 1].len() == 19
+    with pytest.deprecated_call(match="passing a boolean mask to Series.__getitem__"):
+        assert a[a > 1].len() == 18
+        assert a[a < 1].len() == 1
+        assert a[a <= 1].len() == 2
+        assert a[a >= 1].len() == 19
+        assert a[a == 1].len() == 1
+        assert a[a != 1].len() == 19
 
 
 def test_cast() -> None:
@@ -1617,9 +1615,15 @@ def test_str_concat() -> None:
 
 
 def test_str_lengths() -> None:
-    s = pl.Series(["messi", "ronaldo", None])
-    expected = pl.Series([5, 7, None], dtype=UInt32)
+    s = pl.Series(["Café", None, "345", "東京"])
+    expected = pl.Series([5, None, 3, 6], dtype=UInt32)
     verify_series_and_expr_api(s, expected, "str.lengths")
+
+
+def test_str_n_chars() -> None:
+    s = pl.Series(["Café", None, "345", "東京"])
+    expected = pl.Series([4, None, 3, 2], dtype=UInt32)
+    verify_series_and_expr_api(s, expected, "str.n_chars")
 
 
 def test_str_contains() -> None:

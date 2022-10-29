@@ -30,6 +30,10 @@ from polars.datatypes_constructor import (
     polars_type_to_constructor,
     py_type_to_constructor,
 )
+from polars.dependencies import _NUMPY_AVAILABLE, _PYARROW_AVAILABLE
+from polars.dependencies import numpy as np
+from polars.dependencies import pandas as pd
+from polars.dependencies import pyarrow as pa
 from polars.utils import threadpool_size
 
 if version_info >= (3, 10):
@@ -50,23 +54,8 @@ try:
 except ImportError:
     _DOCUMENTING = True
 
-try:
-    import numpy as np
-
-    _NUMPY_AVAILABLE = True
-except ImportError:
-    _NUMPY_AVAILABLE = False
-
-try:
-    import pyarrow as pa
-
-    _PYARROW_AVAILABLE = True
-except ImportError:
-    _PYARROW_AVAILABLE = False
 
 if TYPE_CHECKING:
-    import pandas as pd
-
     from polars.internals.type_aliases import Orientation
 
 
@@ -199,7 +188,6 @@ def sequence_to_pyseries(
     """Construct a PySeries from a sequence."""
     python_dtype: type | None = None
     nested_dtype: PolarsDataType | type | None = None
-    temporal_unit: str | None = None
 
     # empty sequence
     if not values and dtype is None:
@@ -233,7 +221,6 @@ def sequence_to_pyseries(
             elif (
                 dtype in pl_temporal_types or type(dtype) in pl_temporal_types
             ) and not isinstance(value, int):
-                temporal_unit = getattr(dtype, "tu", None)
                 python_dtype = dtype_to_py_type(dtype)  # type: ignore[arg-type]
 
     # physical branch
@@ -252,8 +239,6 @@ def sequence_to_pyseries(
                 python_dtype = float
             else:
                 python_dtype = type(value)
-                if datetime == python_dtype:
-                    temporal_unit = "us"
 
         # temporal branch
         if python_dtype in py_temporal_types:
@@ -262,19 +247,22 @@ def sequence_to_pyseries(
             elif dtype in py_temporal_types:
                 dtype = py_type_to_dtype(dtype)
 
-            # if no temporal unit given, we use anyvalues, so that we have one
-            # consistent level of entry that sets the units and timezones
-            # (e.g. we ignore them). They can be set afterwards.
-            if dtype == Datetime and temporal_unit is None:
-                return PySeries.new_from_anyvalues(name, values)
-
-            if not _PYARROW_AVAILABLE:  # pragma: no cover
-                raise ImportError(
-                    "'pyarrow' is required for converting a Sequence of date or"
-                    " datetime values to a PySeries."
+            # we use anyvalue builder to create the datetime array
+            # we store the values internally as UTC and set the timezone
+            if dtype == Datetime and value.tzinfo is not None:
+                py_series = PySeries.new_from_anyvalues(name, values)
+                tz = str(value.tzinfo)
+                return (
+                    pli.wrap_s(py_series)
+                    .dt.with_time_zone(tz)  # first inform polars of tz
+                    .dt.cast_time_zone("UTC")  # ensure we store them as utc
+                    .dt.with_time_zone(
+                        tz
+                    )  # conversion lead to utc tz, which is not correct.
+                    ._s
                 )
-            # let arrow infer dtype if not timedelta
-            # arrow uses microsecond durations by default, not supported yet.
+
+            # TODO: use anyvalues here (no need to require pyarrow for this).
             arrow_dtype = dtype_to_arrow_type(dtype)
             return arrow_to_pyseries(name, pa.array(values, type=arrow_dtype))
 
@@ -429,10 +417,6 @@ def pandas_to_pyseries(
     name: str, values: pd.Series | pd.DatetimeIndex, nan_to_none: bool = True
 ) -> PySeries:
     """Construct a PySeries from a pandas Series or DatetimeIndex."""
-    if not _PYARROW_AVAILABLE:  # pragma: no cover
-        raise ImportError(
-            "'pyarrow' is required when constructing a PySeries from a pandas Series."
-        )
     # TODO: Change `if not name` to `if name is not None` once name is Optional[str]
     if not name and values.name is not None:
         name = str(values.name)
@@ -533,14 +517,13 @@ def dict_to_pydf(
         return PyDataFrame(data_series)
 
     if _NUMPY_AVAILABLE:
-        all_numpy = True
+        count_numpy = 0
         for val in data.values():
             # only start a thread pool from a reasonable size.
-            all_numpy = all_numpy and isinstance(val, np.ndarray) and len(val) > 1000
-            if not all_numpy:
-                break
+            count_numpy += int(isinstance(val, np.ndarray) and len(val) > 1000)
 
-        if all_numpy:
+        # if we have more than 3 numpy arrays we multi-thread
+        if count_numpy > 2:
             # yes, multi-threading was easier in python here
             # we cannot run multiple threads that run python code
             # and release the gil in pyo3
@@ -550,11 +533,11 @@ def dict_to_pydf(
             import multiprocessing.dummy
 
             pool_size = threadpool_size()
-            pool = multiprocessing.dummy.Pool(pool_size)
-            data_series = pool.map(
-                lambda t: pli.Series(t[0], t[1])._s,
-                [(k, v) for k, v in data.items()],
-            )
+            with multiprocessing.dummy.Pool(pool_size) as pool:
+                data_series = pool.map(
+                    lambda t: pli.Series(t[0], t[1])._s,
+                    [(k, v) for k, v in data.items()],
+                )
             return PyDataFrame(data_series)
 
     # fast path
@@ -588,9 +571,10 @@ def sequence_to_pydf(
             data_series.append(s._s)
 
     elif isinstance(data[0], dict):
-        pydf = PyDataFrame.read_dicts(data, infer_schema_length)
-        if columns:
-            pydf = _post_apply_columns(pydf, columns)
+        column_names, dtypes = _unpack_columns(columns)
+        pydf = PyDataFrame.read_dicts(data, infer_schema_length, dtypes)
+        if column_names:
+            pydf = _post_apply_columns(pydf, column_names)
         return pydf
 
     elif isinstance(data[0], Sequence) and not isinstance(data[0], str):
@@ -609,9 +593,15 @@ def sequence_to_pydf(
             orient = "col" if len(columns) == len(data) else "row"
 
         if orient == "row":
-            pydf = PyDataFrame.read_rows(data, infer_schema_length)
-            if columns:
-                pydf = _post_apply_columns(pydf, columns)
+            column_names, dtypes = _unpack_columns(columns)
+            if len(dtypes) > 0:
+                pydf = PyDataFrame.read_rows(data, infer_schema_length, dtypes)
+            else:
+                pydf = PyDataFrame.read_rows(data, infer_schema_length)
+
+            # change column names given by infer_schema
+            if column_names:
+                pydf = _post_apply_columns(pydf, column_names)
             return pydf
         elif orient == "col" or orient is None:
             columns, dtypes = _unpack_columns(columns, n_expected=len(data))
@@ -718,10 +708,6 @@ def arrow_to_pydf(
     data: pa.Table, columns: ColumnsType | None = None, rechunk: bool = True
 ) -> PyDataFrame:
     """Construct a PyDataFrame from an Arrow Table."""
-    if not _PYARROW_AVAILABLE:  # pragma: no cover
-        raise ImportError(
-            "'pyarrow' is required when constructing a PyDataFrame from an Arrow Table."
-        )
     original_columns = columns
     if columns is not None:
         columns, dtypes = _unpack_columns(columns)
@@ -804,11 +790,6 @@ def pandas_to_pydf(
     nan_to_none: bool = True,
 ) -> PyDataFrame:
     """Construct a PyDataFrame from a pandas DataFrame."""
-    if not _PYARROW_AVAILABLE:  # pragma: no cover
-        raise ImportError(
-            "'pyarrow' is required when constructing a PyDataFrame from a pandas"
-            " DataFrame."
-        )
     length = data.shape[0]
     arrow_dict = {
         str(col): _pandas_series_to_arrow(

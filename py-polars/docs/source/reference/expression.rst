@@ -24,6 +24,7 @@ These functions can be used as expression and sometimes also in eager contexts.
    coalesce
    cov
    cumfold
+   cumreduce
    cumsum
    date
    datetime
@@ -45,6 +46,7 @@ These functions can be used as expression and sometimes also in eager contexts.
    n_unique
    pearson_corr
    quantile
+   reduce
    repeat
    select
    spearman_rank_corr
@@ -218,6 +220,7 @@ Manipulation/ selection
     Expr.sample
     Expr.shift
     Expr.shift_and_fill
+    Expr.shrink_dtype
     Expr.shuffle
     Expr.slice
     Expr.sort
@@ -281,6 +284,7 @@ The following methods are available under the `expr.dt` attribute.
 
     ExprDateTimeNameSpace.cast_time_unit
     ExprDateTimeNameSpace.cast_time_zone
+    ExprDateTimeNameSpace.with_time_zone
     ExprDateTimeNameSpace.day
     ExprDateTimeNameSpace.days
     ExprDateTimeNameSpace.epoch
@@ -303,6 +307,8 @@ The following methods are available under the `expr.dt` attribute.
     ExprDateTimeNameSpace.strftime
     ExprDateTimeNameSpace.timestamp
     ExprDateTimeNameSpace.truncate
+    ExprDateTimeNameSpace.tz_localize
+    ExprDateTimeNameSpace.round
     ExprDateTimeNameSpace.week
     ExprDateTimeNameSpace.weekday
     ExprDateTimeNameSpace.with_time_unit
@@ -331,6 +337,7 @@ The following methods are available under the `Expr.str` attribute.
     ExprStringNameSpace.lengths
     ExprStringNameSpace.ljust
     ExprStringNameSpace.lstrip
+    ExprStringNameSpace.n_chars
     ExprStringNameSpace.replace
     ExprStringNameSpace.replace_all
     ExprStringNameSpace.rjust

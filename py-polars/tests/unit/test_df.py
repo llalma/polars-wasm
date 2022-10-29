@@ -13,14 +13,10 @@ import pytest
 
 import polars as pl
 from polars.datatypes import DTYPE_TEMPORAL_UNITS
+from polars.dependencies import zoneinfo
 from polars.exceptions import NoRowsReturned, TooManyRowsReturned
-from polars.testing import assert_frame_equal, assert_series_equal, columns
-
-if sys.version_info >= (3, 9):
-    from zoneinfo import ZoneInfo
-else:
-    from backports.zoneinfo import ZoneInfo
-
+from polars.testing import assert_frame_equal, assert_series_equal
+from polars.testing.parametric import columns
 
 if TYPE_CHECKING:
     from polars.internals.type_aliases import JoinStrategy
@@ -491,11 +487,15 @@ def test_groupby() -> None:
         df.groupby("a", "b")  # type: ignore[arg-type]
 
 
-BAD_AGG_PARAMETERS = [[("b", "sum")], [("b", ["sum"])], {"b": "sum"}, {"b": ["sum"]}]
-GOOD_AGG_PARAMETERS: list[pl.Expr | list[pl.Expr]] = [
-    [pl.col("b").sum()],
-    pl.col("b").sum(),
-]
+def bad_agg_parameters() -> Any:
+    return [[("b", "sum")], [("b", ["sum"])], {"b": "sum"}, {"b": ["sum"]}]
+
+
+def good_agg_parameters() -> list[pl.Expr | list[pl.Expr]]:
+    return [
+        [pl.col("b").sum()],
+        pl.col("b").sum(),
+    ]
 
 
 @pytest.mark.parametrize("lazy", [True, False])
@@ -503,15 +503,15 @@ def test_groupby_agg_input_types(lazy: bool) -> None:
     df = pl.DataFrame({"a": [1, 1, 2, 2], "b": [1, 2, 3, 4]})
     df_or_lazy: pl.DataFrame | pl.LazyFrame = df.lazy() if lazy else df
 
-    for bad_param in BAD_AGG_PARAMETERS:
+    for bad_param in bad_agg_parameters():
         with pytest.raises(TypeError):
-            result = df_or_lazy.groupby("a").agg(bad_param)  # type: ignore[arg-type]
+            result = df_or_lazy.groupby("a").agg(bad_param)
             if lazy:
                 result.collect()  # type: ignore[union-attr]
 
     expected = pl.DataFrame({"a": [1, 2], "b": [3, 7]})
 
-    for good_param in GOOD_AGG_PARAMETERS:
+    for good_param in good_agg_parameters():
         result = df_or_lazy.groupby("a", maintain_order=True).agg(good_param)
         if lazy:
             result = result.collect()  # type: ignore[union-attr]
@@ -523,19 +523,17 @@ def test_groupby_rolling_agg_input_types(lazy: bool) -> None:
     df = pl.DataFrame({"index_column": [0, 1, 2, 3], "b": [1, 3, 1, 2]})
     df_or_lazy: pl.DataFrame | pl.LazyFrame = df.lazy() if lazy else df
 
-    for bad_param in BAD_AGG_PARAMETERS:
+    for bad_param in bad_agg_parameters():
         with pytest.raises(TypeError):
             result = df_or_lazy.groupby_rolling(
                 index_column="index_column", period="2i"
-            ).agg(
-                bad_param  # type: ignore[arg-type]
-            )
+            ).agg(bad_param)
             if lazy:
                 result.collect()  # type: ignore[union-attr]
 
     expected = pl.DataFrame({"index_column": [0, 1, 2, 3], "b": [1, 4, 4, 3]})
 
-    for good_param in GOOD_AGG_PARAMETERS:
+    for good_param in good_agg_parameters():
         result = df_or_lazy.groupby_rolling(
             index_column="index_column", period="2i"
         ).agg(good_param)
@@ -549,19 +547,17 @@ def test_groupby_dynamic_agg_input_types(lazy: bool) -> None:
     df = pl.DataFrame({"index_column": [0, 1, 2, 3], "b": [1, 3, 1, 2]})
     df_or_lazy: pl.DataFrame | pl.LazyFrame = df.lazy() if lazy else df
 
-    for bad_param in BAD_AGG_PARAMETERS:
+    for bad_param in bad_agg_parameters():
         with pytest.raises(TypeError):
             result = df_or_lazy.groupby_dynamic(
                 index_column="index_column", every="2i", closed="right"
-            ).agg(
-                bad_param  # type: ignore[arg-type]
-            )
+            ).agg(bad_param)
             if lazy:
                 result.collect()  # type: ignore[union-attr]
 
-    expected = pl.DataFrame({"index_column": [0, 0, 2], "b": [1, 4, 2]})
+    expected = pl.DataFrame({"index_column": [-2, 0, 2], "b": [1, 4, 2]})
 
-    for good_param in GOOD_AGG_PARAMETERS:
+    for good_param in good_agg_parameters():
         result = df_or_lazy.groupby_dynamic(
             index_column="index_column", every="2i", closed="right"
         ).agg(good_param)
@@ -681,8 +677,9 @@ def test_extend() -> None:
 
 def test_drop() -> None:
     df = pl.DataFrame({"a": [2, 1, 3], "b": ["a", "b", "c"], "c": [1, 2, 3]})
-    df = df.drop(name="a")  # type: ignore[call-arg]
-    assert df.shape == (3, 2)
+    with pytest.deprecated_call():
+        df = df.drop(name="a")  # type: ignore[call-arg]
+        assert df.shape == (3, 2)
     df = pl.DataFrame({"a": [2, 1, 3], "b": ["a", "b", "c"], "c": [1, 2, 3]})
     df = df.drop(columns="a")
     assert df.shape == (3, 2)
@@ -1044,7 +1041,7 @@ def test_describe() -> None:
             "f": ["3", "0", None, None, "2020-01-01", "2022-01-01", None],
         }
     )
-    pl.testing.assert_frame_equal(df.describe(), expected)
+    assert_frame_equal(df.describe(), expected)
 
 
 def test_duration_arithmetic() -> None:
@@ -1323,9 +1320,9 @@ def test_reproducible_hash_with_seeds() -> None:
     expected = pl.Series(
         "s",
         [
-            15801072432137883943,
+            8823051245921001677,
             988796329533502010,
-            9604537446374444741,
+            7528667241828618484,
         ],
         dtype=pl.UInt64,
     )
@@ -1947,6 +1944,18 @@ def test_get_item() -> None:
     with pytest.raises(ValueError):
         df[pl.Series([True, False, True]), "b"]
 
+    # 5343
+    df = pl.DataFrame(
+        {
+            f"fo{col}": [n**col for n in range(5)]  # 5 rows
+            for col in range(12)  # 12 columns
+        }
+    )
+    assert df[4, 4] == 256
+    assert df[4, 5] == 1024
+    assert df[4, [2]].frame_equal(pl.DataFrame({"fo2": [16]}))
+    assert df[4, [5]].frame_equal(pl.DataFrame({"fo5": [1024]}))
+
 
 @pytest.mark.parametrize("as_series,inner_dtype", [(True, pl.Series), (False, list)])
 def test_to_dict(as_series: bool, inner_dtype: Any) -> None:
@@ -2395,25 +2404,46 @@ def test_union_with_aliases_4770() -> None:
     assert lf.collect()["x"].to_list() == [1, 3, 4]
 
 
-def test_init_with_timezone() -> None:
+def test_init_datetimes_with_timezone() -> None:
+    tz_us = "America/New_York"
+    tz_europe = "Europe/Amsterdam"
+
+    dtm = datetime(2022, 10, 12, 12, 30, tzinfo=zoneinfo.ZoneInfo("UTC"))
     for tu in DTYPE_TEMPORAL_UNITS | frozenset([None]):
         df = pl.DataFrame(
-            data={
-                "d1": [datetime(2022, 10, 12, 12, 30)],
-                "d2": [datetime(2022, 10, 12, 12, 30)],
-            },
+            data={"d1": [dtm], "d2": [dtm]},
             columns=[
-                ("d1", pl.Datetime(tu, "America/New_York")),  # type: ignore[arg-type]
-                ("d2", pl.Datetime(tu, "Asia/Tokyo")),  # type: ignore[arg-type]
+                ("d1", pl.Datetime(tu, tz_us)),
+                ("d2", pl.Datetime(tu, tz_europe)),
             ],
         )
-        # note: setting timezone doesn't change the underlying/physical value...
         assert (df["d1"].to_physical() == df["d2"].to_physical()).all()
-
-        # ...but (as expected) it _does_ change the interpretation of that value
         assert df.rows() == [
             (
-                datetime(2022, 10, 12, 8, 30, tzinfo=ZoneInfo("America/New_York")),
-                datetime(2022, 10, 12, 21, 30, tzinfo=ZoneInfo("Asia/Tokyo")),
+                datetime(2022, 10, 12, 8, 30, tzinfo=zoneinfo.ZoneInfo(tz_us)),
+                datetime(2022, 10, 12, 14, 30, tzinfo=zoneinfo.ZoneInfo(tz_europe)),
+            )
+        ]
+
+
+def test_init_physical_with_timezone() -> None:
+    tz_uae = "Asia/Dubai"
+    tz_asia = "Asia/Tokyo"
+
+    dtm_us = 1665577800000000
+    for tu in DTYPE_TEMPORAL_UNITS | frozenset([None]):
+        dtm = {"ms": dtm_us // 1_000, "ns": dtm_us * 1_000}.get(str(tu), dtm_us)
+        df = pl.DataFrame(
+            data={"d1": [dtm], "d2": [dtm]},
+            columns=[
+                ("d1", pl.Datetime(tu, tz_uae)),
+                ("d2", pl.Datetime(tu, tz_asia)),
+            ],
+        )
+        assert (df["d1"].to_physical() == df["d2"].to_physical()).all()
+        assert df.rows() == [
+            (
+                datetime(2022, 10, 12, 16, 30, tzinfo=zoneinfo.ZoneInfo(tz_uae)),
+                datetime(2022, 10, 12, 21, 30, tzinfo=zoneinfo.ZoneInfo(tz_asia)),
             )
         ]

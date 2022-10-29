@@ -28,6 +28,7 @@ from polars.datatypes import (
     Utf8,
     py_type_to_dtype,
 )
+from polars.dependencies import pyarrow as pa
 from polars.internals import selection_to_pyexpr_list
 from polars.internals.lazyframe.groupby import LazyGroupBy
 from polars.internals.slice import LazyPolarsSlice
@@ -44,13 +45,6 @@ try:
     _DOCUMENTING = False
 except ImportError:
     _DOCUMENTING = True
-
-try:
-    import pyarrow as pa
-
-    _PYARROW_AVAILABLE = True
-except ImportError:
-    _PYARROW_AVAILABLE = False
 
 
 if TYPE_CHECKING:
@@ -656,7 +650,7 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
             graph = subprocess.check_output(
                 ["dot", "-Nshape=box", "-T" + output_type], input=f"{dot}".encode()
             )
-        except ImportError:
+        except (ImportError, FileNotFoundError):
             raise ImportError("Graphviz dot binary should be on your PATH") from None
 
         if output_path:
@@ -1113,7 +1107,10 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
 
     def select(
         self: LDF,
-        exprs: str | pli.Expr | pli.Series | Sequence[str | pli.Expr | pli.Series],
+        exprs: str
+        | pli.Expr
+        | pli.Series
+        | Sequence[str | pli.Expr | pli.Series | pli.WhenThen | pli.WhenThenThen],
     ) -> LDF:
         """
         Select columns from this DataFrame.

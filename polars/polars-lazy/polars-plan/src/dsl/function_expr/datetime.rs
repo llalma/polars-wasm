@@ -1,3 +1,4 @@
+use polars_core::utils::arrow::temporal_conversions::SECONDS_IN_DAY;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -21,8 +22,18 @@ pub enum TemporalFunction {
     Microsecond,
     Nanosecond,
     TimeStamp(TimeUnit),
+    Truncate(String, String),
+    Round(String, String),
     #[cfg(feature = "timezones")]
     CastTimezone(TimeZone),
+    #[cfg(feature = "timezones")]
+    TzLocalize(TimeZone),
+    DateRange {
+        name: String,
+        every: Duration,
+        closed: ClosedWindow,
+        tz: Option<TimeZone>,
+    },
 }
 
 impl Display for TemporalFunction {
@@ -44,8 +55,13 @@ impl Display for TemporalFunction {
             Microsecond => "microsecond",
             Nanosecond => "nanosecond",
             TimeStamp(tu) => return write!(f, "dt.timestamp({})", tu),
+            Truncate(..) => "truncate",
+            Round(..) => "round",
             #[cfg(feature = "timezones")]
             CastTimezone(_) => "cast_timezone",
+            #[cfg(feature = "timezones")]
+            TzLocalize(_) => "tz_localize",
+            DateRange { .. } => return write!(f, "date_range"),
         };
         write!(f, "dt.{}", s)
     }
@@ -96,8 +112,76 @@ pub(super) fn nanosecond(s: &Series) -> PolarsResult<Series> {
 pub(super) fn timestamp(s: &Series, tu: TimeUnit) -> PolarsResult<Series> {
     s.timestamp(tu).map(|ca| ca.into_series())
 }
+pub(super) fn truncate(s: &Series, every: &str, offset: &str) -> PolarsResult<Series> {
+    let every = Duration::parse(every);
+    let offset = Duration::parse(offset);
+    match s.dtype() {
+        DataType::Datetime(_, _) => Ok(s.datetime().unwrap().truncate(every, offset).into_series()),
+        DataType::Date => Ok(s.date().unwrap().truncate(every, offset).into_series()),
+        dt => Err(PolarsError::ComputeError(
+            format!("expected date/datetime got {:?}", dt).into(),
+        )),
+    }
+}
+pub(super) fn round(s: &Series, every: &str, offset: &str) -> PolarsResult<Series> {
+    let every = Duration::parse(every);
+    let offset = Duration::parse(offset);
+    match s.dtype() {
+        DataType::Datetime(_, _) => Ok(s.datetime().unwrap().round(every, offset).into_series()),
+        DataType::Date => Ok(s.date().unwrap().round(every, offset).into_series()),
+        dt => Err(PolarsError::ComputeError(
+            format!("expected date/datetime got {:?}", dt).into(),
+        )),
+    }
+}
 #[cfg(feature = "timezones")]
 pub(super) fn cast_timezone(s: &Series, tz: &str) -> PolarsResult<Series> {
     let ca = s.datetime()?;
-    ca.cast_timezone(tz).map(|ca| ca.into_series())
+    ca.cast_time_zone(tz).map(|ca| ca.into_series())
+}
+
+#[cfg(feature = "timezones")]
+pub(super) fn tz_localize(s: &Series, tz: &str) -> PolarsResult<Series> {
+    let ca = s.datetime()?.clone();
+    match ca.time_zone() {
+        Some(tz) if !tz.is_empty() => {
+            Err(PolarsError::ComputeError("Cannot localize a tz-aware datetime. Consider using 'dt.with_time_zone' or 'dt.cast_time_zone'".into()))
+        },
+        _ => {
+            Ok(ca.with_time_zone(Some(tz.into())).cast_time_zone("UTC")?.with_time_zone(Some(tz.into())).into_series())
+        }
+    }
+}
+
+pub(super) fn date_range_dispatch(
+    s: &[Series],
+    name: &str,
+    every: Duration,
+    closed: ClosedWindow,
+    tz: Option<TimeZone>,
+) -> PolarsResult<Series> {
+    let start = &s[0];
+    let stop = &s[1];
+
+    match start.dtype() {
+        DataType::Date => {
+            let start = start.to_physical_repr();
+            let stop = stop.to_physical_repr();
+            // to milliseconds
+            let start = start.get(0).extract::<i64>().unwrap() * SECONDS_IN_DAY * 1000;
+            let stop = stop.get(0).extract::<i64>().unwrap() * SECONDS_IN_DAY * 1000;
+
+            date_range_impl(name, start, stop, every, closed, TimeUnit::Milliseconds, tz)
+                .cast(&DataType::Date)
+        }
+        DataType::Datetime(tu, _) => {
+            let start = start.to_physical_repr();
+            let stop = stop.to_physical_repr();
+            let start = start.get(0).extract::<i64>().unwrap();
+            let stop = stop.get(0).extract::<i64>().unwrap();
+
+            Ok(date_range_impl(name, start, stop, every, closed, *tu, tz).into_series())
+        }
+        _ => todo!(),
+    }
 }

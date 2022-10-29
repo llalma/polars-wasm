@@ -123,14 +123,6 @@ impl PhysicalExpr for BinaryExpr {
         let mut ac_l = result_a?;
         let mut ac_r = result_b?;
 
-        if !ac_l.can_combine(&ac_r) {
-            return Err(PolarsError::InvalidOperation(
-                "\
-            cannot combine this binary expression, the groups do not match"
-                    .into(),
-            ));
-        }
-
         match (
             ac_l.agg_state(),
             ac_r.agg_state(),
