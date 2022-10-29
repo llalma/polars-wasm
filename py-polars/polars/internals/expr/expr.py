@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import math
 import random
+import warnings
 from datetime import date, datetime, time, timedelta
-from typing import TYPE_CHECKING, Any, Callable, NoReturn, Sequence
+from typing import TYPE_CHECKING, Any, Callable, NoReturn, Sequence, cast
 from warnings import warn
 
 from polars import internals as pli
@@ -15,6 +16,8 @@ from polars.datatypes import (
     is_polars_dtype,
     py_type_to_dtype,
 )
+from polars.dependencies import _NUMPY_TYPE
+from polars.dependencies import numpy as np
 from polars.internals.expr.categorical import ExprCatNameSpace
 from polars.internals.expr.datetime import ExprDateTimeNameSpace
 from polars.internals.expr.list import ExprListNameSpace
@@ -30,13 +33,6 @@ try:
 except ImportError:
     _DOCUMENTING = True
 
-try:
-    import numpy as np
-
-    _NUMPY_AVAILABLE = True
-except ImportError:
-    _NUMPY_AVAILABLE = False
-
 if TYPE_CHECKING:
     from polars.internals.type_aliases import (
         ClosedWindow,
@@ -51,7 +47,18 @@ def selection_to_pyexpr_list(
     exprs: str
     | Expr
     | pli.Series
-    | Sequence[str | Expr | pli.Series | timedelta | date | datetime | int | float],
+    | Sequence[
+        str
+        | Expr
+        | pli.Series
+        | timedelta
+        | date
+        | datetime
+        | int
+        | float
+        | pli.WhenThen
+        | pli.WhenThenThen
+    ],
 ) -> list[PyExpr]:
     if isinstance(exprs, (str, Expr, pli.Series)):
         exprs = [exprs]
@@ -72,6 +79,8 @@ def expr_to_lit_or_expr(
         | datetime
         | time
         | timedelta
+        | pli.WhenThen
+        | pli.WhenThenThen
         | Sequence[(int | float | str | None)]
     ),
     str_to_lit: bool = True,
@@ -103,6 +112,9 @@ def expr_to_lit_or_expr(
         return expr
     elif isinstance(expr, list):
         return pli.lit(pli.Series("", [expr]))
+    elif isinstance(expr, (pli.WhenThen, pli.WhenThenThen)):
+        # implicitly add the null branch.
+        return expr.otherwise(None)
     else:
         raise ValueError(
             f"did not expect value {expr} of type {type(expr)}, maybe disambiguate with"
@@ -236,9 +248,6 @@ class Expr:
         self, ufunc: Callable[..., Any], method: str, *inputs: Any, **kwargs: Any
     ) -> Expr:
         """Numpy universal functions."""
-        if not _NUMPY_AVAILABLE:
-            raise ImportError("'numpy' is required for this functionality.")
-
         args = [inp for inp in inputs if not isinstance(inp, Expr)]
 
         def function(s: pli.Series) -> pli.Series:  # pragma: no cover
@@ -908,7 +917,7 @@ class Expr:
         >>> df = pl.DataFrame(
         ...     {
         ...         "A": [1.0, 2],
-        ...         "B": [3.0, np.inf],
+        ...         "B": [3.0, float("inf")],
         ...     }
         ... )
         >>> df.select(pl.all().is_finite())
@@ -940,7 +949,7 @@ class Expr:
         >>> df = pl.DataFrame(
         ...     {
         ...         "A": [1.0, 2],
-        ...         "B": [3.0, np.inf],
+        ...         "B": [3.0, float("inf")],
         ...     }
         ... )
         >>> df.select(pl.all().is_infinite())
@@ -1987,8 +1996,9 @@ class Expr:
 
         """
         if isinstance(indices, list) or (
-            _NUMPY_AVAILABLE and isinstance(indices, np.ndarray)
+            _NUMPY_TYPE(indices) and isinstance(indices, np.ndarray)
         ):
+            indices = cast("np.ndarray[Any, Any]", indices)
             indices_lit = pli.lit(pli.Series("", indices, dtype=UInt32))
         else:
             indices_lit = pli.expr_to_lit_or_expr(
@@ -3006,7 +3016,7 @@ class Expr:
     def apply(
         self,
         f: Callable[[pli.Series], pli.Series] | Callable[[Any], Any],
-        return_dtype: type[DataType] | None = None,
+        return_dtype: PolarsDataType | None = None,
     ) -> Expr:
         """
         Apply a custom/user-defined function (UDF) in a GroupBy or Projection context.
@@ -3428,7 +3438,7 @@ class Expr:
         self,
         start: Expr | datetime | int,
         end: Expr | datetime | int,
-        include_bounds: bool | Sequence[bool] = False,
+        include_bounds: bool | tuple[bool, bool] = False,
     ) -> Expr:
         """
         Check if this expression is between start and end.
@@ -3442,10 +3452,10 @@ class Expr:
         include_bounds
            False:           Exclude both start and end (default).
            True:            Include both start and end.
-           [False, False]:  Exclude start and exclude end.
-           [True, True]:    Include start and include end.
-           [False, True]:   Exclude start and include end.
-           [True, False]:   Include start and exclude end.
+           (False, False):  Exclude start and exclude end.
+           (True, True):    Include start and include end.
+           (False, True):   Exclude start and include end.
+           (True, False):   Include start and exclude end.
 
         Returns
         -------
@@ -3453,11 +3463,7 @@ class Expr:
 
         Examples
         --------
-        >>> df = pl.DataFrame(
-        ...     {
-        ...         "num": [1, 2, 3, 4, 5],
-        ...     }
-        ... )
+        >>> df = pl.DataFrame({"num": [1, 2, 3, 4, 5]})
         >>> df.with_column(pl.col("num").is_between(2, 4))
         shape: (5, 2)
         ┌─────┬────────────┐
@@ -3488,18 +3494,23 @@ class Expr:
             expr = self.cast(Datetime)
         else:
             expr = self
-        if include_bounds is False or include_bounds == [False, False]:
+        if isinstance(include_bounds, list):
+            warnings.warn(
+                "include_bounds: list[bool] will not be supported in a future "
+                "version; pass include_bounds: tuple[bool, bool] instead",
+                category=DeprecationWarning,
+            )
+            include_bounds = tuple(include_bounds)
+        if include_bounds is False or include_bounds == (False, False):
             return ((expr > start) & (expr < end)).alias("is_between")
-        elif include_bounds is True or include_bounds == [True, True]:
+        elif include_bounds is True or include_bounds == (True, True):
             return ((expr >= start) & (expr <= end)).alias("is_between")
-        elif include_bounds == [False, True]:
+        elif include_bounds == (False, True):
             return ((expr > start) & (expr <= end)).alias("is_between")
-        elif include_bounds == [True, False]:
+        elif include_bounds == (True, False):
             return ((expr >= start) & (expr < end)).alias("is_between")
         else:
-            raise ValueError(
-                "include_bounds should be a boolean or [boolean, boolean]."
-            )
+            raise ValueError("include_bounds should be a bool or tuple[bool, bool].")
 
     def hash(
         self,
@@ -3539,11 +3550,11 @@ class Expr:
         │ ---                  ┆ ---                  │
         │ u64                  ┆ u64                  │
         ╞══════════════════════╪══════════════════════╡
-        │ 2461716855791224000  ┆ 16174362112783765148 │
+        │ 4629889412789719550  ┆ 6959506404929392568  │
         ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
-        │ 13569566217648818014 ┆ 11638928888656214026 │
+        │ 16386608652769605760 ┆ 11638928888656214026 │
         ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
-        │ 11638928888656214026 ┆ 6351727772611549480  │
+        │ 11638928888656214026 ┆ 11040941213715918520 │
         └──────────────────────┴──────────────────────┘
 
         """
@@ -5981,6 +5992,43 @@ class Expr:
 
         """
         return wrap_expr(self._pyexpr.list())
+
+    def shrink_dtype(self) -> Expr:
+        """
+        Shrink numeric columns to the minimal required datatype.
+
+        Shrink to the dtype needed to fit the extrema of this [`Series`].
+        This can be used to reduce memory pressure.
+
+        Examples
+        --------
+        >>> pl.DataFrame(
+        ...     {
+        ...         "a": [1, 2, 3],
+        ...         "b": [1, 2, 2 << 32],
+        ...         "c": [-1, 2, 1 << 30],
+        ...         "d": [-112, 2, 112],
+        ...         "e": [-112, 2, 129],
+        ...         "f": ["a", "b", "c"],
+        ...         "g": [0.1, 1.32, 0.12],
+        ...         "h": [True, None, False],
+        ...     }
+        ... ).select(pl.all().shrink_dtype())
+        shape: (3, 8)
+        ┌─────┬────────────┬────────────┬──────┬──────┬─────┬──────┬───────┐
+        │ a   ┆ b          ┆ c          ┆ d    ┆ e    ┆ f   ┆ g    ┆ h     │
+        │ --- ┆ ---        ┆ ---        ┆ ---  ┆ ---  ┆ --- ┆ ---  ┆ ---   │
+        │ i8  ┆ i64        ┆ i32        ┆ i8   ┆ i16  ┆ str ┆ f32  ┆ bool  │
+        ╞═════╪════════════╪════════════╪══════╪══════╪═════╪══════╪═══════╡
+        │ 1   ┆ 1          ┆ -1         ┆ -112 ┆ -112 ┆ a   ┆ 0.1  ┆ true  │
+        ├╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌┼╌╌╌╌╌╌┼╌╌╌╌╌┼╌╌╌╌╌╌┼╌╌╌╌╌╌╌┤
+        │ 2   ┆ 2          ┆ 2          ┆ 2    ┆ 2    ┆ b   ┆ 1.32 ┆ null  │
+        ├╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌┼╌╌╌╌╌╌┼╌╌╌╌╌┼╌╌╌╌╌╌┼╌╌╌╌╌╌╌┤
+        │ 3   ┆ 8589934592 ┆ 1073741824 ┆ 112  ┆ 129  ┆ c   ┆ 0.12 ┆ false │
+        └─────┴────────────┴────────────┴──────┴──────┴─────┴──────┴───────┘
+
+        """
+        return wrap_expr(self._pyexpr.shrink_dtype())
 
     @property
     def str(self) -> ExprStringNameSpace:

@@ -82,6 +82,17 @@ impl DateLikeNameSpace {
         )
     }
 
+    /// Localize tz-naive Datetime Series to tz-aware Datetime Series.
+    //
+    // This method takes a naive Datetime Series and makes this time zone aware.
+    // It does not move the time to another time zone.
+    #[cfg(feature = "timezones")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "timezones")))]
+    pub fn tz_localize(self, tz: TimeZone) -> Expr {
+        self.0
+            .map_private(FunctionExpr::TemporalExpr(TemporalFunction::TzLocalize(tz)))
+    }
+
     /// Get the year of a Date/Datetime
     pub fn year(self) -> Expr {
         self.0
@@ -178,6 +189,24 @@ impl DateLikeNameSpace {
     pub fn timestamp(self, tu: TimeUnit) -> Expr {
         self.0
             .map_private(FunctionExpr::TemporalExpr(TemporalFunction::TimeStamp(tu)))
+    }
+
+    pub fn truncate<S: AsRef<str>>(self, every: S, offset: S) -> Expr {
+        let every = every.as_ref().into();
+        let offset = offset.as_ref().into();
+        self.0
+            .map_private(FunctionExpr::TemporalExpr(TemporalFunction::Truncate(
+                every, offset,
+            )))
+    }
+
+    pub fn round<S: AsRef<str>>(self, every: S, offset: S) -> Expr {
+        let every = every.as_ref().into();
+        let offset = offset.as_ref().into();
+        self.0
+            .map_private(FunctionExpr::TemporalExpr(TemporalFunction::Round(
+                every, offset,
+            )))
     }
 
     /// Offset this `Date/Datetime` by a given offset [`Duration`].

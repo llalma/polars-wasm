@@ -5,6 +5,7 @@ use polars_core::frame::groupby::GroupsProxy;
 use polars_core::prelude::*;
 use polars_core::POOL;
 
+use crate::physical_plan::expression_err;
 use crate::physical_plan::state::{ExecutionState, StateFlags};
 use crate::prelude::*;
 
@@ -35,13 +36,13 @@ fn expand_lengths(truthy: &mut Series, falsy: &mut Series, mask: &mut BooleanChu
     let len = std::cmp::max(std::cmp::max(truthy.len(), falsy.len()), mask.len());
     if len > 1 {
         if falsy.len() == 1 {
-            *falsy = falsy.expand_at_index(0, len);
+            *falsy = falsy.new_from_index(0, len);
         }
         if truthy.len() == 1 {
-            *truthy = truthy.expand_at_index(0, len);
+            *truthy = truthy.new_from_index(0, len);
         }
         if mask.len() == 1 {
-            *mask = mask.expand_at_index(0, len);
+            *mask = mask.new_from_index(0, len);
         }
     }
 }
@@ -182,7 +183,8 @@ impl PhysicalExpr for TernaryExpr {
                 let mask = mask_s.bool()?;
                 let check_length = |ca: &ListChunked, mask: &BooleanChunked| {
                     if ca.len() != mask.len() {
-                        Err(PolarsError::ComputeError(format!("the predicates length: '{}' does not match the length of the groups: {}", mask.len(), ca.len()).into()))
+                        let msg = format!("The predicates length: '{}' does not match the length of the groups: {}.", mask.len(), ca.len());
+                        Err(expression_err!(msg, self.expr, ComputeError))
                     } else {
                         Ok(())
                     }

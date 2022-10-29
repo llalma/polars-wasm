@@ -17,11 +17,8 @@ else:
 
 import polars as pl
 from polars.datatypes import DTYPE_TEMPORAL_UNITS, TemporalDataType
-from polars.testing import (
-    assert_frame_equal,
-    assert_series_equal,
-    verify_series_and_expr_api,
-)
+from polars.testing import assert_frame_equal, assert_series_equal
+from polars.testing._private import verify_series_and_expr_api
 
 if TYPE_CHECKING:
     from polars.internals.type_aliases import TimeUnit
@@ -376,6 +373,36 @@ def test_truncate() -> None:
         assert out.dt[-1] == stop
 
 
+def test_round() -> None:
+    start = datetime(2001, 1, 1)
+    stop = datetime(2001, 1, 2)
+
+    s1 = pl.date_range(
+        start, stop, timedelta(minutes=30), name="dates[ms]", time_unit="ms"
+    )
+    s2 = pl.date_range(
+        start, stop, timedelta(minutes=30), name="dates[us]", time_unit="us"
+    )
+    s3 = pl.date_range(
+        start, stop, timedelta(minutes=30), name="dates[ns]", time_unit="ns"
+    )
+
+    # can pass strings and timedeltas
+    for out in [
+        s1.dt.round("1h"),
+        s2.dt.round("1h0m0s"),
+        s3.dt.round(timedelta(hours=1)),
+    ]:
+        assert out.dt[0] == start
+        assert out.dt[1] == start + timedelta(hours=1)
+        assert out.dt[2] == start + timedelta(hours=1)
+        assert out.dt[3] == start + timedelta(hours=2)
+        # ...
+        assert out.dt[-3] == stop - timedelta(hours=1)
+        assert out.dt[-2] == stop
+        assert out.dt[-1] == stop
+
+
 def test_date_range() -> None:
     result = pl.date_range(
         date(1985, 1, 1), date(2015, 7, 1), timedelta(days=1, hours=12)
@@ -474,7 +501,7 @@ def test_truncate_negative_offset() -> None:
     )
 
     assert out["event_date"].to_list() == [
-        datetime(2021, 4, 1),
+        datetime(2021, 3, 1),
         datetime(2021, 4, 1),
         datetime(2021, 5, 1),
     ]
@@ -701,7 +728,8 @@ def test_read_utc_times_parquet() -> None:
     df.to_parquet(f)
     f.seek(0)
     df_in = pl.read_parquet(f)
-    assert df_in["Timestamp"][0] == datetime(2022, 1, 1, 0, 0)
+    tz = zoneinfo.ZoneInfo("UTC")
+    assert df_in["Timestamp"][0] == datetime(2022, 1, 1, 0, 0, tzinfo=tz)
 
 
 def test_epoch() -> None:
@@ -732,9 +760,9 @@ def test_default_negative_every_offset_dynamic_groupby() -> None:
     expected = pl.DataFrame(
         {
             "dt": [
+                datetime(2019, 12, 1, 0, 0),
                 datetime(2020, 1, 1, 0, 0),
-                datetime(2020, 1, 1, 0, 0),
-                datetime(2020, 3, 1, 0, 0),
+                datetime(2020, 2, 1, 0, 0),
             ],
             "idx": [[0], [1, 2], [3]],
         }
@@ -1500,6 +1528,7 @@ def test_weekday() -> None:
     assert s.cast(pl.Date).dt.weekday()[0] == 0
 
 
+@pytest.mark.skip(reason="from_dicts cannot yet infer timezones")
 def test_from_dict_tu_consistency() -> None:
     tz = zoneinfo.ZoneInfo("PRC")
     dt = datetime(2020, 8, 1, 12, 0, 0, tzinfo=tz)
@@ -1607,6 +1636,8 @@ def test_invalid_date_parsing_4898() -> None:
 
 
 def test_cast_timezone() -> None:
+    utc = zoneinfo.ZoneInfo("UTC")
+    ny = zoneinfo.ZoneInfo("America/New_York")
     assert pl.DataFrame({"a": [datetime(2022, 9, 25, 14)]}).with_column(
         pl.col("a")
         .dt.with_time_zone("America/New_York")
@@ -1614,7 +1645,7 @@ def test_cast_timezone() -> None:
         .alias("b")
     ).to_dict(False) == {
         "a": [datetime(2022, 9, 25, 14, 0)],
-        "b": [datetime(2022, 9, 25, 18, 0)],
+        "b": [datetime(2022, 9, 25, 18, 0, tzinfo=utc)],
     }
     assert pl.DataFrame({"a": [datetime(2022, 9, 25, 18)]}).with_column(
         pl.col("a")
@@ -1623,7 +1654,7 @@ def test_cast_timezone() -> None:
         .alias("b")
     ).to_dict(False) == {
         "a": [datetime(2022, 9, 25, 18, 0)],
-        "b": [datetime(2022, 9, 25, 14, 0)],
+        "b": [datetime(2022, 9, 25, 10, 0, tzinfo=ny)],
     }
 
 
@@ -1633,3 +1664,112 @@ def test_tz_aware_get_idx_5010() -> None:
     )
     a = pa.array([when]).cast(pa.timestamp("s", tz="Asia/Shanghai"))
     assert int(pl.from_arrow(a)[0].timestamp()) == when  # type: ignore[union-attr]
+
+
+def test_tz_datetime_duration_arithm_5221() -> None:
+    run_datetimes = [
+        datetime.fromisoformat("2022-01-01T00:00:00+00:00"),
+        datetime.fromisoformat("2022-01-02T00:00:00+00:00"),
+    ]
+    out = pl.DataFrame(
+        data={"run_datetime": run_datetimes},
+        columns=[("run_datetime", pl.Datetime(time_zone="UTC"))],
+    )
+    utc = zoneinfo.ZoneInfo("UTC")
+    assert out.to_dict(False) == {
+        "run_datetime": [
+            datetime(2022, 1, 1, 0, 0, tzinfo=utc),
+            datetime(2022, 1, 2, 0, 0, tzinfo=utc),
+        ]
+    }
+
+
+def test_auto_infer_time_zone() -> None:
+    dt = datetime(2022, 10, 17, 10, tzinfo=zoneinfo.ZoneInfo("Asia/Shanghai"))
+    s = pl.Series([dt])
+    assert s.dtype == pl.Datetime("us", "Asia/Shanghai")
+    assert s[0] == dt
+
+
+def test_timezone_aware_date_range() -> None:
+    low = datetime(2022, 10, 17, 10, tzinfo=zoneinfo.ZoneInfo("Asia/Shanghai"))
+    high = datetime(2022, 11, 17, 10, tzinfo=zoneinfo.ZoneInfo("Asia/Shanghai"))
+
+    assert pl.date_range(low, high, interval=timedelta(days=5)).to_list() == [
+        datetime(2022, 10, 17, 10, 0, tzinfo=zoneinfo.ZoneInfo(key="Asia/Shanghai")),
+        datetime(2022, 10, 22, 10, 0, tzinfo=zoneinfo.ZoneInfo(key="Asia/Shanghai")),
+        datetime(2022, 10, 27, 10, 0, tzinfo=zoneinfo.ZoneInfo(key="Asia/Shanghai")),
+        datetime(2022, 11, 1, 10, 0, tzinfo=zoneinfo.ZoneInfo(key="Asia/Shanghai")),
+        datetime(2022, 11, 6, 10, 0, tzinfo=zoneinfo.ZoneInfo(key="Asia/Shanghai")),
+        datetime(2022, 11, 11, 10, 0, tzinfo=zoneinfo.ZoneInfo(key="Asia/Shanghai")),
+        datetime(2022, 11, 16, 10, 0, tzinfo=zoneinfo.ZoneInfo(key="Asia/Shanghai")),
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="Cannot mix different timezone aware datetimes. "
+        "Got: 'Asia/Shanghai' and 'None'",
+    ):
+        pl.date_range(
+            low, high.replace(tzinfo=None), interval=timedelta(days=5), time_zone="UTC"
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="Given time_zone is different from that timezone aware datetimes. "
+        "Given: 'UTC', got: 'Asia/Shanghai'.",
+    ):
+        pl.date_range(low, high, interval=timedelta(days=5), time_zone="UTC")
+
+
+def test_logical_nested_take() -> None:
+    frame = pl.DataFrame(
+        {
+            "ix": [2, 1],
+            "dt": [[datetime(2001, 1, 1)], [datetime(2001, 1, 2)]],
+            "d": [[date(2001, 1, 1)], [date(2001, 1, 1)]],
+            "t": [[time(10)], [time(10)]],
+            "del": [[timedelta(10)], [timedelta(10)]],
+            "str": [[{"a": time(10)}], [{"a": time(10)}]],
+        }
+    )
+    out = frame.sort(by="ix")
+
+    assert out.dtypes[:-1] == [
+        pl.Int64,
+        pl.List(pl.Datetime("us")),
+        pl.List(pl.Date),
+        pl.List(pl.Time),
+        pl.List(pl.Duration("us")),
+    ]
+    assert out.to_dict(False) == {
+        "ix": [1, 2],
+        "dt": [[datetime(2001, 1, 2, 0, 0)], [datetime(2001, 1, 1, 0, 0)]],
+        "d": [[date(2001, 1, 1)], [date(2001, 1, 1)]],
+        "t": [[time(10, 0)], [time(10, 0)]],
+        "del": [[timedelta(days=10)], [timedelta(days=10)]],
+        "str": [[{"a": time(10, 0)}], [{"a": time(10, 0)}]],
+    }
+
+
+def test_tz_localize() -> None:
+    df = pl.DataFrame(
+        {
+            "date": pl.Series(["2022-01-01", "2022-01-02"]).str.strptime(
+                pl.Date, "%Y-%m-%d"
+            )
+        }
+    )
+
+    assert df.select(
+        pl.col("date").cast(pl.Datetime).dt.tz_localize("America/New_York")
+    ).to_dict(False) == {
+        "date": [
+            datetime(
+                2022, 1, 1, 0, 0, tzinfo=zoneinfo.ZoneInfo(key="America/New_York")
+            ),
+            datetime(
+                2022, 1, 2, 0, 0, tzinfo=zoneinfo.ZoneInfo(key="America/New_York")
+            ),
+        ]
+    }

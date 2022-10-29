@@ -6,13 +6,7 @@ from typing import cast
 
 import polars as pl
 from polars import internals as pli
-
-try:
-    import pyarrow as pa
-
-    _PYARROW_AVAILABLE = True
-except ImportError:
-    _PYARROW_AVAILABLE = False
+from polars.dependencies import pyarrow as pa
 
 
 def _deser_and_exec(buf: bytes, with_columns: list[str] | None) -> pli.DataFrame:
@@ -52,8 +46,6 @@ def _scan_ds_impl(
     DataFrame
 
     """
-    if not _PYARROW_AVAILABLE:  # pragma: no cover
-        raise ImportError("'pyarrow' is required for scanning from pyarrow datasets.")
     return cast(pli.DataFrame, pl.from_arrow(ds.to_table(columns=with_columns)))
 
 

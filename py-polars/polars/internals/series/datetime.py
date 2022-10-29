@@ -934,9 +934,9 @@ class DateTimeNameSpace:
         shape: (3,)
         Series: 'London' [datetime[μs, Europe/London]]
         [
-                2020-03-01 00:00:00 GMT
-                2020-04-01 00:00:00 BST
-                2020-05-01 00:00:00 BST
+            2020-03-01 00:00:00 GMT
+            2020-04-01 01:00:00 BST
+            2020-05-01 01:00:00 BST
         ]
 
         """
@@ -980,9 +980,9 @@ class DateTimeNameSpace:
         shape: (3,)
         Series: 'London' [datetime[μs, Europe/London]]
         [
-                2020-03-01 00:00:00 GMT
-                2020-04-01 00:00:00 BST
-                2020-05-01 00:00:00 BST
+            2020-03-01 00:00:00 GMT
+            2020-04-01 01:00:00 BST
+            2020-05-01 01:00:00 BST
         ]
         >>> # Timestamps have not changed after with_time_zone
         >>> date.dt.epoch(tu="s")
@@ -998,9 +998,9 @@ class DateTimeNameSpace:
         shape: (3,)
         Series: 'NYC' [datetime[μs, America/New_York]]
         [
-            2020-02-29 19:00:00 EST
-            2020-03-31 19:00:00 EDT
-            2020-04-30 19:00:00 EDT
+            2020-02-29 14:00:00 EST
+            2020-03-31 15:00:00 EDT
+            2020-04-30 15:00:00 EDT
         ]
         >>> # Timestamps have changed after cast_time_zone
         >>> date.dt.epoch(tu="s")
@@ -1011,6 +1011,20 @@ class DateTimeNameSpace:
             1585681200
             1588273200
         ]
+
+        """
+
+    def tz_localize(self, tz: str) -> pli.Series:
+        """
+        Localize tz-naive Datetime Series to tz-aware Datetime Series.
+
+        This method takes a naive Datetime Series and makes this time zone aware.
+        It does not move the time to another time zone.
+
+        Parameters
+        ----------
+        tz
+            Time zone for the `Datetime` Series.
 
         """
 
@@ -1351,78 +1365,120 @@ class DateTimeNameSpace:
         -------
         Date/Datetime series
 
+        Examples
+        --------
+        >>> from datetime import timedelta, datetime
+        >>> start = datetime(2001, 1, 1)
+        >>> stop = datetime(2001, 1, 2)
+        >>> s = pl.date_range(start, stop, timedelta(minutes=165), name="dates")
+        >>> s
+        shape: (9,)
+        Series: 'dates' [datetime[μs]]
+        [
+            2001-01-01 00:00:00
+            2001-01-01 02:45:00
+            2001-01-01 05:30:00
+            2001-01-01 08:15:00
+            2001-01-01 11:00:00
+            2001-01-01 13:45:00
+            2001-01-01 16:30:00
+            2001-01-01 19:15:00
+            2001-01-01 22:00:00
+        ]
+        >>> s.dt.truncate("1h")
+        shape: (9,)
+        Series: 'dates' [datetime[μs]]
+        [
+            2001-01-01 00:00:00
+            2001-01-01 02:00:00
+            2001-01-01 05:00:00
+            2001-01-01 08:00:00
+            2001-01-01 11:00:00
+            2001-01-01 13:00:00
+            2001-01-01 16:00:00
+            2001-01-01 19:00:00
+            2001-01-01 22:00:00
+        ]
+        >>> s.dt.truncate("1h").series_equal(s.dt.truncate(timedelta(hours=1)))
+        True
+
+        """
+
+    def round(
+        self,
+        every: str | timedelta,
+        offset: str | timedelta | None = None,
+    ) -> pli.Series:
+        """
+        Divide the date/ datetime range into buckets.
+
+        The `every` and `offset` argument are created with the
+        the following string language:
+
+        1ns # 1 nanosecond
+        1us # 1 microsecond
+        1ms # 1 millisecond
+        1s  # 1 second
+        1m  # 1 minute
+        1h  # 1 hour
+        1d  # 1 day
+        1w  # 1 week
+        1mo # 1 calendar month
+        1y  # 1 calendar year
+
+        3d12h4m25s # 3 days, 12 hours, 4 minutes, and 25 seconds
+
+        Parameters
+        ----------
+        every
+            Every interval start and period length
+        offset
+            Offset the window
+
+        Returns
+        -------
+        Date/Datetime series
+
         Warnings
         --------
-        This functionality is experimental and may change without it being considered a
-        breaking change.
+        This functionality is currently experimental and may
+        change without it being considered a breaking change.
 
         Examples
         --------
         >>> from datetime import timedelta, datetime
         >>> start = datetime(2001, 1, 1)
         >>> stop = datetime(2001, 1, 2)
-        >>> s = pl.date_range(start, stop, timedelta(minutes=30), name="dates")
+        >>> s = pl.date_range(start, stop, timedelta(minutes=165), name="dates")
         >>> s
-        shape: (49,)
+        shape: (9,)
         Series: 'dates' [datetime[μs]]
         [
             2001-01-01 00:00:00
-            2001-01-01 00:30:00
-            2001-01-01 01:00:00
-            2001-01-01 01:30:00
-            2001-01-01 02:00:00
-            2001-01-01 02:30:00
-            2001-01-01 03:00:00
-            2001-01-01 03:30:00
-            2001-01-01 04:00:00
-            2001-01-01 04:30:00
-            2001-01-01 05:00:00
+            2001-01-01 02:45:00
             2001-01-01 05:30:00
-            ...
-            2001-01-01 18:30:00
-            2001-01-01 19:00:00
-            2001-01-01 19:30:00
-            2001-01-01 20:00:00
-            2001-01-01 20:30:00
-            2001-01-01 21:00:00
-            2001-01-01 21:30:00
+            2001-01-01 08:15:00
+            2001-01-01 11:00:00
+            2001-01-01 13:45:00
+            2001-01-01 16:30:00
+            2001-01-01 19:15:00
             2001-01-01 22:00:00
-            2001-01-01 22:30:00
-            2001-01-01 23:00:00
-            2001-01-01 23:30:00
-            2001-01-02 00:00:00
         ]
-        >>> s.dt.truncate("1h")
-        shape: (49,)
+        >>> s.dt.round("1h")
+        shape: (9,)
         Series: 'dates' [datetime[μs]]
         [
             2001-01-01 00:00:00
-            2001-01-01 00:00:00
-            2001-01-01 01:00:00
-            2001-01-01 01:00:00
-            2001-01-01 02:00:00
-            2001-01-01 02:00:00
             2001-01-01 03:00:00
-            2001-01-01 03:00:00
-            2001-01-01 04:00:00
-            2001-01-01 04:00:00
-            2001-01-01 05:00:00
-            2001-01-01 05:00:00
-            ...
-            2001-01-01 18:00:00
+            2001-01-01 06:00:00
+            2001-01-01 08:00:00
+            2001-01-01 11:00:00
+            2001-01-01 14:00:00
+            2001-01-01 17:00:00
             2001-01-01 19:00:00
-            2001-01-01 19:00:00
-            2001-01-01 20:00:00
-            2001-01-01 20:00:00
-            2001-01-01 21:00:00
-            2001-01-01 21:00:00
             2001-01-01 22:00:00
-            2001-01-01 22:00:00
-            2001-01-01 23:00:00
-            2001-01-01 23:00:00
-            2001-01-02 00:00:00
         ]
-        >>> s.dt.truncate("1h").series_equal(s.dt.truncate(timedelta(hours=1)))
+        >>> s.dt.round("1h").series_equal(s.dt.round(timedelta(hours=1)))
         True
 
         """

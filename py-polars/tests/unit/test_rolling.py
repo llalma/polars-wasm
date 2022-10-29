@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime
+import typing
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
 
 import polars as pl
+from polars.testing import assert_frame_equal
 
 if TYPE_CHECKING:
     from polars.internals.type_aliases import ClosedWindow
@@ -54,7 +56,7 @@ def test_rolling_kernels_and_groupby_rolling() -> None:
                     pl.col("values").std().alias("std"),
                 ]
             )
-            pl.testing.assert_frame_equal(out1, out2)
+            assert_frame_equal(out1, out2)
 
 
 def test_rolling_skew() -> None:
@@ -364,3 +366,47 @@ def test_rolling_skew_lagging_null_5179() -> None:
         0.6309038567106234,
         0.0,
     ]
+
+
+def test_rolling_var_numerical_stability_5197() -> None:
+    s = pl.Series([*[1.2] * 4, *[3.3] * 7])
+    assert s.to_frame("a").with_columns(pl.col("a").rolling_var(5))[:, 0].to_list() == [
+        None,
+        None,
+        None,
+        None,
+        0.882,
+        1.3229999999999997,
+        1.3229999999999997,
+        0.8819999999999983,
+        0.0,
+        0.0,
+        0.0,
+    ]
+
+
+@typing.no_type_check
+def test_dynamic_groupby_timezone_awareness() -> None:
+    df = pl.DataFrame(
+        (
+            pl.date_range(
+                datetime(2020, 1, 1),
+                datetime(2020, 1, 10),
+                timedelta(days=1),
+                time_unit="ns",
+                name="datetime",
+            ).dt.with_time_zone("UTC"),
+            pl.Series("value", pl.arange(1, 11, eager=True)),
+        )
+    )
+
+    assert (
+        df.groupby_dynamic(
+            "datetime",
+            "3d",
+            offset="-1d",
+            closed="right",
+            include_boundaries=True,
+            truncate=False,
+        ).agg(pl.col("value").last())
+    ).dtypes == [pl.Datetime("ns", "UTC")] * 3 + [pl.Int64]

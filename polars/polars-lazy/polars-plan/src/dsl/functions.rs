@@ -5,7 +5,6 @@
 use std::ops::{BitAnd, BitOr};
 
 use polars_core::export::arrow::temporal_conversions::NANOSECONDS;
-use polars_core::prelude::*;
 use polars_core::utils::arrow::temporal_conversions::SECONDS_IN_DAY;
 #[cfg(feature = "rank")]
 use polars_core::utils::coalesce_nulls_series;
@@ -14,7 +13,6 @@ use polars_core::utils::get_supertype;
 
 #[cfg(feature = "arg_where")]
 use crate::dsl::function_expr::FunctionExpr;
-#[cfg(feature = "list")]
 use crate::dsl::function_expr::ListFunction;
 #[cfg(feature = "strings")]
 use crate::dsl::function_expr::StringFunction;
@@ -301,8 +299,6 @@ pub fn format_str<E: AsRef<[Expr]>>(format: &str, args: E) -> PolarsResult<Expr>
 }
 
 /// Concat lists entries.
-#[cfg(feature = "list")]
-#[cfg_attr(docsrs, doc(cfg(feature = "list")))]
 pub fn concat_lst<E: AsRef<[IE]>, IE: Into<Expr> + Clone>(s: E) -> Expr {
     let s = s.as_ref().iter().map(|e| e.clone().into()).collect();
 
@@ -422,40 +418,40 @@ pub fn datetime(args: DatetimeArgs) -> Expr {
         let max_len = s.iter().map(|s| s.len()).max().unwrap();
         let mut year = s[0].cast(&DataType::Int32)?;
         if year.len() < max_len {
-            year = year.expand_at_index(0, max_len)
+            year = year.new_from_index(0, max_len)
         }
         let year = year.i32()?;
         let mut month = s[1].cast(&DataType::UInt32)?;
         if month.len() < max_len {
-            month = month.expand_at_index(0, max_len);
+            month = month.new_from_index(0, max_len);
         }
         let month = month.u32()?;
         let mut day = s[2].cast(&DataType::UInt32)?;
         if day.len() < max_len {
-            day = day.expand_at_index(0, max_len);
+            day = day.new_from_index(0, max_len);
         }
         let day = day.u32()?;
         let mut hour = s[3].cast(&DataType::UInt32)?;
         if hour.len() < max_len {
-            hour = hour.expand_at_index(0, max_len);
+            hour = hour.new_from_index(0, max_len);
         }
         let hour = hour.u32()?;
 
         let mut minute = s[4].cast(&DataType::UInt32)?;
         if minute.len() < max_len {
-            minute = minute.expand_at_index(0, max_len);
+            minute = minute.new_from_index(0, max_len);
         }
         let minute = minute.u32()?;
 
         let mut second = s[5].cast(&DataType::UInt32)?;
         if second.len() < max_len {
-            second = second.expand_at_index(0, max_len);
+            second = second.new_from_index(0, max_len);
         }
         let second = second.u32()?;
 
         let mut microsecond = s[6].cast(&DataType::UInt32)?;
         if microsecond.len() < max_len {
-            microsecond = microsecond.expand_at_index(0, max_len);
+            microsecond = microsecond.new_from_index(0, max_len);
         }
         let microsecond = microsecond.u32()?;
 
@@ -540,7 +536,7 @@ pub fn duration(args: DurationArgs) -> Expr {
         };
 
         if nanoseconds.len() != max_len {
-            nanoseconds = nanoseconds.expand_at_index(0, max_len);
+            nanoseconds = nanoseconds.new_from_index(0, max_len);
         }
         if condition(&microseconds) {
             nanoseconds = nanoseconds + (microseconds * 1_000);
@@ -579,7 +575,7 @@ pub fn duration(args: DurationArgs) -> Expr {
             args.weeks.unwrap_or_else(|| lit(0i64)),
         ],
         function,
-        output_type: GetOutput::from_type(DataType::Datetime(TimeUnit::Microseconds, None)),
+        output_type: GetOutput::from_type(DataType::Duration(TimeUnit::Nanoseconds)),
         options: FunctionOptions {
             collect_groups: ApplyOptions::ApplyFlat,
             input_wildcard_expansion: true,
@@ -705,6 +701,25 @@ where
     a.apply_many(function, &[b], output_type)
 }
 
+#[cfg(feature = "dtype-struct")]
+fn cumfold_dtype() -> GetOutput {
+    GetOutput::map_fields(|fields| {
+        let mut st = fields[0].dtype.clone();
+        for fld in &fields[1..] {
+            st = get_supertype(&st, &fld.dtype).unwrap();
+        }
+        Field::new(
+            &fields[0].name,
+            DataType::Struct(
+                fields
+                    .iter()
+                    .map(|fld| Field::new(fld.name(), st.clone()))
+                    .collect(),
+            ),
+        )
+    })
+}
+
 /// Accumulate over multiple columns horizontally / row wise.
 pub fn fold_exprs<F: 'static, E: AsRef<[Expr]>>(acc: Expr, f: F, exprs: E) -> Expr
 where
@@ -732,6 +747,90 @@ where
             input_wildcard_expansion: true,
             auto_explode: true,
             fmt_str: "fold",
+            ..Default::default()
+        },
+    }
+}
+
+pub fn reduce_exprs<F: 'static, E: AsRef<[Expr]>>(f: F, exprs: E) -> Expr
+where
+    F: Fn(Series, Series) -> PolarsResult<Series> + Send + Sync + Clone,
+{
+    let exprs = exprs.as_ref().to_vec();
+
+    let function = SpecialEq::new(Arc::new(move |series: &mut [Series]| {
+        let mut s_iter = series.iter();
+
+        match s_iter.next() {
+            Some(acc) => {
+                let mut acc = acc.clone();
+
+                for s in s_iter {
+                    acc = f(acc, s.clone())?;
+                }
+                Ok(acc)
+            }
+            None => Err(PolarsError::ComputeError(
+                "Reduce did not have any expressions to fold".into(),
+            )),
+        }
+    }) as Arc<dyn SeriesUdf>);
+
+    Expr::AnonymousFunction {
+        input: exprs,
+        function,
+        output_type: GetOutput::super_type(),
+        options: FunctionOptions {
+            collect_groups: ApplyOptions::ApplyGroups,
+            input_wildcard_expansion: true,
+            auto_explode: true,
+            fmt_str: "reduce",
+            ..Default::default()
+        },
+    }
+}
+
+/// Accumulate over multiple columns horizontally / row wise.
+#[cfg(feature = "dtype-struct")]
+#[cfg_attr(docsrs, doc(cfg(feature = "rank")))]
+pub fn cumreduce_exprs<F: 'static, E: AsRef<[Expr]>>(f: F, exprs: E) -> Expr
+where
+    F: Fn(Series, Series) -> PolarsResult<Series> + Send + Sync + Clone,
+{
+    let exprs = exprs.as_ref().to_vec();
+
+    let function = SpecialEq::new(Arc::new(move |series: &mut [Series]| {
+        let mut s_iter = series.iter();
+
+        match s_iter.next() {
+            Some(acc) => {
+                let mut acc = acc.clone();
+                let mut result = vec![acc.clone()];
+
+                for s in s_iter {
+                    let name = s.name().to_string();
+                    acc = f(acc, s.clone())?;
+                    acc.rename(&name);
+                    result.push(acc.clone());
+                }
+
+                StructChunked::new(acc.name(), &result).map(|ca| ca.into_series())
+            }
+            None => Err(PolarsError::ComputeError(
+                "Reduce did not have any expressions to fold".into(),
+            )),
+        }
+    }) as Arc<dyn SeriesUdf>);
+
+    Expr::AnonymousFunction {
+        input: exprs,
+        function,
+        output_type: cumfold_dtype(),
+        options: FunctionOptions {
+            collect_groups: ApplyOptions::ApplyGroups,
+            input_wildcard_expansion: true,
+            auto_explode: true,
+            fmt_str: "cumreduce",
             ..Default::default()
         },
     }
@@ -774,21 +873,7 @@ where
     Expr::AnonymousFunction {
         input: exprs,
         function,
-        output_type: GetOutput::map_fields(|fields| {
-            let mut st = fields[0].dtype.clone();
-            for fld in &fields[1..] {
-                st = get_supertype(&st, &fld.dtype).unwrap();
-            }
-            Field::new(
-                &fields[0].name,
-                DataType::Struct(
-                    fields
-                        .iter()
-                        .map(|fld| Field::new(fld.name(), st.clone()))
-                        .collect(),
-                ),
-            )
-        }),
+        output_type: cumfold_dtype(),
         options: FunctionOptions {
             collect_groups: ApplyOptions::ApplyGroups,
             input_wildcard_expansion: true,
@@ -947,7 +1032,7 @@ pub fn repeat<L: Literal>(value: L, n_times: Expr) -> Expr {
         let n = n.get(0).extract::<usize>().ok_or_else(|| {
             PolarsError::ComputeError(format!("could not extract a size from {:?}", n).into())
         })?;
-        Ok(s.expand_at_index(0, n))
+        Ok(s.new_from_index(0, n))
     };
     apply_binary(lit(value), n_times, function, GetOutput::same_type())
 }
@@ -974,6 +1059,34 @@ pub fn coalesce(exprs: &[Expr]) -> Expr {
     Expr::Function {
         input,
         function: FunctionExpr::Coalesce,
+        options: FunctionOptions {
+            collect_groups: ApplyOptions::ApplyGroups,
+            cast_to_supertypes: true,
+            ..Default::default()
+        },
+    }
+}
+
+///  Create a date range from a `start` and `stop` expression.
+#[cfg(feature = "temporal")]
+pub fn date_range(
+    name: String,
+    start: Expr,
+    end: Expr,
+    every: Duration,
+    closed: ClosedWindow,
+    tz: Option<TimeZone>,
+) -> Expr {
+    let input = vec![start, end];
+
+    Expr::Function {
+        input,
+        function: FunctionExpr::TemporalExpr(TemporalFunction::DateRange {
+            name,
+            every,
+            closed,
+            tz,
+        }),
         options: FunctionOptions {
             collect_groups: ApplyOptions::ApplyGroups,
             cast_to_supertypes: true,

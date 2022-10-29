@@ -17,6 +17,8 @@ from polars.datatypes import (
     is_polars_dtype,
     py_type_to_dtype,
 )
+from polars.dependencies import _NUMPY_TYPE
+from polars.dependencies import numpy as np
 from polars.utils import (
     _datetime_to_pl_timestamp,
     _time_to_pl_time,
@@ -37,6 +39,7 @@ try:
     from polars.polars import count as _count
     from polars.polars import cov as pycov
     from polars.polars import cumfold as pycumfold
+    from polars.polars import cumreduce as pycumreduce
     from polars.polars import dtype_cols as _dtype_cols
     from polars.polars import first as _first
     from polars.polars import fold as pyfold
@@ -47,6 +50,7 @@ try:
     from polars.polars import min_exprs as _min_exprs
     from polars.polars import pearson_corr as pypearson_corr
     from polars.polars import py_datetime, py_duration
+    from polars.polars import reduce as pyreduce
     from polars.polars import repeat as _repeat
     from polars.polars import spearman_rank_corr as pyspearman_rank_corr
     from polars.polars import sum_exprs as _sum_exprs
@@ -54,13 +58,6 @@ try:
     _DOCUMENTING = False
 except ImportError:
     _DOCUMENTING = True
-
-try:
-    import numpy as np
-
-    _NUMPY_AVAILABLE = True
-except ImportError:
-    _NUMPY_AVAILABLE = False
 
 if sys.version_info >= (3, 8):
     from typing import Literal
@@ -752,7 +749,7 @@ def lit(
             return e
         return e.alias(name)
 
-    if _NUMPY_AVAILABLE and isinstance(value, np.ndarray):
+    if _NUMPY_TYPE(value) and isinstance(value, np.ndarray):
         return lit(pli.Series("", value))
 
     if dtype:
@@ -973,13 +970,16 @@ def map(
 
     """
     exprs = pli.selection_to_pyexpr_list(exprs)
-    return pli.wrap_expr(_map_mul(exprs, f, return_dtype, apply_groups=False))
+    return pli.wrap_expr(
+        _map_mul(exprs, f, return_dtype, apply_groups=False, returns_scalar=False)
+    )
 
 
 def apply(
     exprs: Sequence[str | pli.Expr],
     f: Callable[[Sequence[pli.Series]], pli.Series | Any],
     return_dtype: type[DataType] | None = None,
+    returns_scalar: bool = True,
 ) -> pli.Expr:
     """
     Apply a custom/user-defined function (UDF) in a GroupBy context.
@@ -1000,6 +1000,8 @@ def apply(
         Function to apply over the input
     return_dtype
         dtype of the output Series
+    returns_scalar
+        If the function returns a single scalar as output.
 
     Returns
     -------
@@ -1007,7 +1009,11 @@ def apply(
 
     """
     exprs = pli.selection_to_pyexpr_list(exprs)
-    return pli.wrap_expr(_map_mul(exprs, f, return_dtype, apply_groups=True))
+    return pli.wrap_expr(
+        _map_mul(
+            exprs, f, return_dtype, apply_groups=True, returns_scalar=returns_scalar
+        )
+    )
 
 
 def fold(
@@ -1029,6 +1035,11 @@ def fold(
     exprs
         Expressions to aggregate over. May also be a wildcard expression.
 
+    Notes
+    -----
+    If you simply want the first encountered expression as accumulator,
+    consider using ``reduce``.
+
     """
     # in case of pl.col("*")
     acc = pli.expr_to_lit_or_expr(acc, str_to_lit=True)
@@ -1037,6 +1048,34 @@ def fold(
 
     exprs = pli.selection_to_pyexpr_list(exprs)
     return pli.wrap_expr(pyfold(acc._pyexpr, f, exprs))
+
+
+def reduce(
+    f: Callable[[pli.Series, pli.Series], pli.Series],
+    exprs: Sequence[pli.Expr | str] | pli.Expr,
+) -> pli.Expr:
+    """
+    Accumulate over multiple columns horizontally/ row wise with a left fold.
+
+    Parameters
+    ----------
+    f
+        Function to apply over the accumulator and the value.
+        Fn(acc, value) -> new_value
+    exprs
+        Expressions to aggregate over. May also be a wildcard expression.
+
+    Notes
+    -----
+    See ``fold`` for the version with an explicit accumulator.
+
+    """
+    # in case of pl.col("*")
+    if isinstance(exprs, pli.Expr):
+        exprs = [exprs]
+
+    exprs = pli.selection_to_pyexpr_list(exprs)
+    return pli.wrap_expr(pyreduce(f, exprs))
 
 
 def cumfold(
@@ -1063,6 +1102,11 @@ def cumfold(
     include_init
         Include the initial accumulator state as struct field.
 
+    Notes
+    -----
+    If you simply want the first encountered expression as accumulator,
+    consider using ``cumreduce``.
+
     """  # noqa E501
     # in case of pl.col("*")
     acc = pli.expr_to_lit_or_expr(acc, str_to_lit=True)
@@ -1071,6 +1115,32 @@ def cumfold(
 
     exprs = pli.selection_to_pyexpr_list(exprs)
     return pli.wrap_expr(pycumfold(acc._pyexpr, f, exprs, include_init))
+
+
+def cumreduce(
+    f: Callable[[pli.Series, pli.Series], pli.Series],
+    exprs: Sequence[pli.Expr | str] | pli.Expr,
+) -> pli.Expr:
+    """
+    Cumulatively accumulate over multiple columns horizontally/ row wise with a left fold.
+
+    Every cumulative result is added as a separate field in a Struct column.
+
+    Parameters
+    ----------
+    f
+        Function to apply over the accumulator and the value.
+        Fn(acc, value) -> new_value
+    exprs
+        Expressions to aggregate over. May also be a wildcard expression.
+
+    """  # noqa E501
+    # in case of pl.col("*")
+    if isinstance(exprs, pli.Expr):
+        exprs = [exprs]
+
+    exprs = pli.selection_to_pyexpr_list(exprs)
+    return pli.wrap_expr(pycumreduce(f, exprs))
 
 
 def any(name: str | Sequence[str] | Sequence[pli.Expr] | pli.Expr) -> pli.Expr:

@@ -10,7 +10,6 @@ mod from;
 pub(crate) mod function_expr;
 #[cfg(feature = "compile")]
 pub mod functions;
-#[cfg(feature = "list")]
 mod list;
 #[cfg(feature = "meta")]
 mod meta;
@@ -28,7 +27,6 @@ use std::sync::Arc;
 pub use expr::*;
 pub use function_expr::*;
 pub use functions::*;
-#[cfg(feature = "list")]
 pub use list::*;
 pub use options::*;
 use polars_arrow::prelude::QuantileInterpolOptions;
@@ -2088,6 +2086,13 @@ impl Expr {
         })
     }
 
+    /// Shrink numeric columns to the minimal required datatype
+    /// needed to fit the extrema of this [`Series`].
+    /// This can be used to reduce memory pressure.
+    pub fn shrink_dtype(self) -> Self {
+        self.map_private(FunctionExpr::ShrinkType)
+    }
+
     /// Check if all boolean values are `true`
     pub fn all(self) -> Self {
         self.apply(
@@ -2106,24 +2111,6 @@ impl Expr {
             opt.auto_explode = true;
             opt
         })
-    }
-
-    /// This is useful if an `apply` function needs a floating point type.
-    /// Because this cast is done on a `map` level, it will be faster.
-    pub fn to_float(self) -> Self {
-        self.map(
-            |s| match s.dtype() {
-                DataType::Float32 | DataType::Float64 => Ok(s),
-                _ => s.cast(&DataType::Float64),
-            },
-            GetOutput::map_dtype(|dt| {
-                if matches!(dt, DataType::Float32) {
-                    DataType::Float32
-                } else {
-                    DataType::Float64
-                }
-            }),
-        )
     }
 
     #[cfg(feature = "dtype-struct")]
@@ -2253,7 +2240,6 @@ impl Expr {
     pub fn dt(self) -> dt::DateLikeNameSpace {
         dt::DateLikeNameSpace(self)
     }
-    #[cfg(feature = "list")]
     pub fn arr(self) -> list::ListNameSpace {
         list::ListNameSpace(self)
     }
@@ -2376,7 +2362,12 @@ where
 ///
 /// * `[map_mul]` should be used for operations that are independent of groups, e.g. `multiply * 2`, or `raise to the power`
 /// * `[apply_mul]` should be used for operations that work on a group of data. e.g. `sum`, `count`, etc.
-pub fn apply_multiple<F, E>(function: F, expr: E, output_type: GetOutput) -> Expr
+pub fn apply_multiple<F, E>(
+    function: F,
+    expr: E,
+    output_type: GetOutput,
+    returns_scalar: bool,
+) -> Expr
 where
     F: Fn(&mut [Series]) -> PolarsResult<Series> + 'static + Send + Sync,
     E: AsRef<[Expr]>,
@@ -2389,7 +2380,9 @@ where
         output_type,
         options: FunctionOptions {
             collect_groups: ApplyOptions::ApplyGroups,
-            auto_explode: true,
+            // don't set this to true
+            // this is for the caller to decide
+            auto_explode: returns_scalar,
             fmt_str: "",
             ..Default::default()
         },

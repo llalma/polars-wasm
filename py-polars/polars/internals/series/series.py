@@ -35,6 +35,15 @@ from polars.datatypes import (
     py_type_to_dtype,
     supported_numpy_char_code,
 )
+from polars.dependencies import (
+    _NUMPY_TYPE,
+    _PANDAS_TYPE,
+    _PYARROW_AVAILABLE,
+    _PYARROW_TYPE,
+)
+from polars.dependencies import numpy as np
+from polars.dependencies import pandas as pd
+from polars.dependencies import pyarrow as pa
 from polars.internals.construction import (
     arrow_to_pyseries,
     numpy_to_pyseries,
@@ -67,30 +76,9 @@ try:
 except ImportError:
     _DOCUMENTING = True
 
-try:
-    import numpy as np
-
-    from polars.internals.series._numpy import SeriesView, _ptr_to_numpy
-
-    _NUMPY_AVAILABLE = True
-except ImportError:
-    _NUMPY_AVAILABLE = False
-
-try:
-    import pyarrow as pa
-
-    _PYARROW_AVAILABLE = True
-except ImportError:
-    _PYARROW_AVAILABLE = False
-
-try:
-    import pandas as pd
-
-    _PANDAS_AVAILABLE = True
-except ImportError:
-    _PANDAS_AVAILABLE = False
 
 if TYPE_CHECKING:
+    from polars.internals.series._numpy import SeriesView
     from polars.internals.type_aliases import (
         ComparisonOperator,
         FillNullStrategy,
@@ -215,9 +203,9 @@ class Series:
             )
         elif isinstance(values, Series):
             self._s = series_to_pyseries(name, values)
-        elif _PYARROW_AVAILABLE and isinstance(values, (pa.Array, pa.ChunkedArray)):
+        elif _PYARROW_TYPE(values) and isinstance(values, (pa.Array, pa.ChunkedArray)):
             self._s = arrow_to_pyseries(name, values)
-        elif _NUMPY_AVAILABLE and isinstance(values, np.ndarray):
+        elif _NUMPY_TYPE(values) and isinstance(values, np.ndarray):
             self._s = numpy_to_pyseries(name, values, strict, nan_to_null)
             if values.dtype.type == np.datetime64:
                 # cast to appropriate dtype, handling NaT values
@@ -236,7 +224,7 @@ class Series:
             self._s = sequence_to_pyseries(
                 name, values, dtype=dtype, strict=strict, dtype_if_empty=dtype_if_empty
             )
-        elif _PANDAS_AVAILABLE and isinstance(values, (pd.Series, pd.DatetimeIndex)):
+        elif _PANDAS_TYPE(values) and isinstance(values, (pd.Series, pd.DatetimeIndex)):
             self._s = pandas_to_pyseries(name, values)
         else:
             raise ValueError("Series constructor not called properly.")
@@ -597,7 +585,7 @@ class Series:
 
                 return idxs.cast(idx_type)
 
-        if _NUMPY_AVAILABLE and isinstance(idxs, np.ndarray):
+        if _NUMPY_TYPE(idxs) and isinstance(idxs, np.ndarray):
             if idxs.ndim != 1:
                 raise ValueError("Only 1D numpy array is supported as index.")
             if idxs.dtype.kind in ("i", "u"):
@@ -650,7 +638,7 @@ class Series:
             is_bool_sequence(item)
             or (isinstance(item, Series) and item.dtype == Boolean)
             or (
-                _NUMPY_AVAILABLE
+                _NUMPY_TYPE(item)
                 and isinstance(item, np.ndarray)
                 and item.dtype.kind == "b"
             )
@@ -676,7 +664,7 @@ class Series:
 
             return self._s.get_idx(item)
 
-        if _NUMPY_AVAILABLE and isinstance(item, np.ndarray):
+        if _NUMPY_TYPE(item) and isinstance(item, np.ndarray):
             if item.ndim != 1:
                 raise ValueError("Only a 1D-Numpy array is supported as index.")
             if item.dtype.kind in ("i", "u"):
@@ -728,13 +716,15 @@ class Series:
                 self._s = self.set_at_idx(key.cast(UInt32), value)._s
             elif key.dtype == UInt32:
                 self._s = self.set_at_idx(key, value)._s
+
         # TODO: implement for these types without casting to series
-        elif _NUMPY_AVAILABLE and isinstance(key, np.ndarray) and key.dtype == np.bool_:
-            # boolean numpy mask
-            self._s = self.set_at_idx(np.argwhere(key)[:, 0], value)._s
-        elif _NUMPY_AVAILABLE and isinstance(key, np.ndarray):
-            s = wrap_s(PySeries.new_u32("", np.array(key, np.uint32), True))
-            self.__setitem__(s, value)
+        elif _NUMPY_TYPE(key) and isinstance(key, np.ndarray):
+            if key.dtype == np.bool_:
+                # boolean numpy mask
+                self._s = self.set_at_idx(np.argwhere(key)[:, 0], value)._s
+            else:
+                s = wrap_s(PySeries.new_u32("", np.array(key, np.uint32), True))
+                self.__setitem__(s, value)
         elif isinstance(key, (list, tuple)):
             s = wrap_s(sequence_to_pyseries("", key, dtype=UInt32))
             self.__setitem__(s, value)
@@ -753,9 +743,6 @@ class Series:
         self, ufunc: np.ufunc, method: str, *inputs: Any, **kwargs: Any
     ) -> Series:
         """Numpy universal functions."""
-        if not _NUMPY_AVAILABLE:
-            raise ImportError("'numpy' is required for this functionality.")
-
         if self._s.n_chunks() > 1:
             self._s.rechunk(in_place=True)
 
@@ -2546,6 +2533,8 @@ class Series:
         if not ignore_nulls:
             assert not self.has_validity()
 
+        from polars.internals.series._numpy import SeriesView, _ptr_to_numpy
+
         ptr_type = dtype_to_ctype(self.dtype)
         ptr = self._s.as_single_ptr()
         array = _ptr_to_numpy(ptr, self.len(), ptr_type)
@@ -2656,11 +2645,6 @@ class Series:
         dtype: int64
 
         """
-        if not _PYARROW_AVAILABLE:  # pragma: no cover
-            raise ImportError(
-                "'pyarrow' is required for converting a 'polars' Series to a 'pandas'"
-                " Series."
-            )
         return self.to_arrow().to_pandas()
 
     def set(self, filter: Series, value: int | float | str) -> Series:
@@ -3271,7 +3255,7 @@ class Series:
     def apply(
         self,
         func: Callable[[Any], Any],
-        return_dtype: type[DataType] | None = None,
+        return_dtype: PolarsDataType | None = None,
         skip_nulls: bool = True,
     ) -> Series:
         """
@@ -4069,9 +4053,9 @@ class Series:
         shape: (3,)
         Series: 'a' [u64]
         [
-            89438004737668041
-            14107061265552512458
-            15437026767517145468
+            2374023516666777365
+            10386026231460783898
+            17796317186427479491
         ]
 
         """
@@ -4651,6 +4635,18 @@ class Series:
 
         """
         return wrap_s(self._s.set_sorted(reverse))
+
+    def new_from_index(self, index: int, length: int) -> pli.Series:
+        """Create a new Series filled with values from the given index."""
+        return wrap_s(self._s.new_from_index(index, length))
+
+    def shrink_dtype(self) -> Series:
+        """
+        Shrink numeric columns to the minimal required datatype.
+
+        Shrink to the dtype needed to fit the extrema of this [`Series`].
+        This can be used to reduce memory pressure.
+        """
 
     # Below are the namespaces defined. Do not move these up in the definition of
     # Series, as it confuses mypy between the type annotation `str` and the

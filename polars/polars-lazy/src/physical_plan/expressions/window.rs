@@ -11,6 +11,7 @@ use polars_core::POOL;
 use polars_utils::sort::perfect_sort;
 
 use super::*;
+use crate::physical_plan::expression_err;
 use crate::physical_plan::state::ExecutionState;
 use crate::prelude::*;
 
@@ -136,22 +137,19 @@ impl WindowExpr {
             (true, true, _) => Ok(MapStrategy::ExplodeLater),
             // Explode all the aggregated lists. Maybe add later?
             (true, false, _) => {
-                Err(PolarsError::ComputeError("This operation is likely not what you want (you may need '.list()'). Please open an issue if you really want to do this".into()))
+                let msg = "This operation is likely not what you want (you may need '.list()'). Please open an issue if you really want to do this";
+                Err(expression_err!(msg, self.expr, ComputeError))
             }
             // explicit list
             // `(col("x").sum() * col("y")).list().over("groups")`
-            (false, true, _) => {
-                Ok(MapStrategy::Join)
-            }
+            (false, true, _) => Ok(MapStrategy::Join),
             // aggregations
             //`sum("foo").over("groups")`
-            (false, false, AggState::AggregatedFlat(_)) => {
-                Ok(MapStrategy::Join)
-            }
+            (false, false, AggState::AggregatedFlat(_)) => Ok(MapStrategy::Join),
             // no explicit aggregations, map over the groups
             //`(col("x").sum() * col("y")).over("groups")`
             (false, false, AggState::AggregatedList(_)) => {
-                if sorted_keys  {
+                if sorted_keys {
                     if let GroupsProxy::Idx(g) = gb.get_groups() {
                         debug_assert!(g.is_sorted())
                     }
@@ -175,12 +173,9 @@ impl WindowExpr {
                 } else {
                     Ok(MapStrategy::Map)
                 }
-
             }
             // literals, do nothing and let broadcast
-            (false, false, AggState::Literal(_)) => {
-                Ok(MapStrategy::Nothing)
-            }
+            (false, false, AggState::Literal(_)) => Ok(MapStrategy::Nothing),
         }
     }
 }
@@ -356,10 +351,41 @@ impl PhysicalExpr for WindowExpr {
                 let out_column = ac.aggregated();
                 let flattened = out_column.explode()?;
                 if flattened.len() != df.height() {
-                    return Err(PolarsError::ComputeError(
-                        "the length of the window expression did not match that of the group"
-                            .into(),
-                    ));
+                    let ca = out_column.list().unwrap();
+                    let non_matching_group =
+                        ca.into_iter()
+                            .zip(ac.groups().iter())
+                            .find(|(output, group)| {
+                                if let Some(output) = output {
+                                    output.as_ref().len() != group.len()
+                                } else {
+                                    false
+                                }
+                            });
+
+                    return if let Some((output, group)) = non_matching_group {
+                        let first = group.first();
+                        let group = groupby_columns
+                            .iter()
+                            .map(|s| format!("{}", s.get(first as usize)))
+                            .collect::<Vec<_>>();
+                        let err_msg = format!(
+                            "{}\n> Group: ",
+                            "The length of the window expression did not match that of the group."
+                        );
+                        let err_msg = column_delimited(err_msg, &group);
+                        let err_msg = format!(
+                            "{}\n> Group length: {}\n> Output: '{:?}'",
+                            err_msg,
+                            group.len(),
+                            output.unwrap()
+                        );
+                        Err(expression_err!(err_msg, self.expr, ComputeError))
+                    } else {
+                        let msg =
+                            "The length of the window expression did not match that of the group.";
+                        Err(expression_err!(msg, self.expr, ComputeError))
+                    };
                 }
 
                 // idx (new-idx, original-idx)

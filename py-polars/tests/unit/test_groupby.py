@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import pytest
 
 import polars as pl
+from polars.testing import assert_series_equal
 
 
 def test_groupby_sorted_empty_dataframe_3680() -> None:
@@ -143,7 +144,7 @@ def test_argsort_sort_by_groups_update__4360() -> None:
         ]
     )
 
-    pl.testing.assert_series_equal(out["result_a"], out["result_b"], check_names=False)
+    assert_series_equal(out["result_a"], out["result_b"], check_names=False)
     assert out["result_a"].to_list() == [1, 2, 3, 3, 2, 1, 2, 3, 1]
 
 
@@ -192,3 +193,10 @@ def test_groupby_dynamic_overlapping_groups_flat_apply_multiple_5038() -> None:
     ).collect().sum().to_dict(False) == pytest.approx(
         {"a": [None], "corr": [6.988674024215477]}
     )
+
+
+def test_take_in_groupby() -> None:
+    df = pl.DataFrame({"group": [1, 1, 1, 2, 2, 2], "values": [10, 200, 3, 40, 500, 6]})
+    assert df.groupby("group").agg(
+        pl.col("values").take(1) - pl.col("values").take(2)
+    ).sort("group").to_dict(False) == {"group": [1, 2], "values": [197, 494]}

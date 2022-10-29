@@ -265,3 +265,26 @@ def test_unset_sorted_flag_after_extend() -> None:
     df = df1.groupby("Add").agg([pl.col("Batch").min()]).sort("Add")
     assert df["Add"].flags["SORTED_ASC"]
     assert df.to_dict(False) == {"Add": [37, 41], "Batch": [48, 49]}
+
+
+def test_sort_slice_fast_path_5245() -> None:
+    df = pl.DataFrame(
+        {
+            "foo": ["f", "c", "b", "a"],
+            "bar": [1, 2, 3, 4],
+        }
+    ).lazy()
+
+    assert df.sort("foo").limit(1).select("foo").collect().to_dict(False) == {
+        "foo": ["a"]
+    }
+
+
+def test_explicit_list_agg_sort_in_groupby() -> None:
+    df = pl.DataFrame({"A": ["a", "a", "a", "b", "b", "a"], "B": [1, 2, 3, 4, 5, 6]})
+    assert (
+        df.groupby("A")
+        .agg(pl.col("B").list().sort(reverse=True))
+        .sort("A")
+        .frame_equal(df.groupby("A").agg(pl.col("B").sort(reverse=True)).sort("A"))
+    )

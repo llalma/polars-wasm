@@ -489,7 +489,7 @@ impl DataFrame {
     ///
     /// let f1: Field = Field::new("Thing", DataType::Utf8);
     /// let f2: Field = Field::new("Diameter (m)", DataType::Float64);
-    /// let sc: Schema = Schema::from(vec![f1, f2]);
+    /// let sc: Schema = Schema::from(vec![f1, f2].into_iter());
     ///
     /// assert_eq!(df.schema(), sc);
     /// # Ok::<(), PolarsError>(())
@@ -1115,7 +1115,7 @@ impl DataFrame {
         fn inner(df: &mut DataFrame, mut series: Series) -> PolarsResult<&mut DataFrame> {
             let height = df.height();
             if series.len() == 1 && height > 1 {
-                series = series.expand_at_index(0, height);
+                series = series.new_from_index(0, height);
             }
 
             if series.len() == height || df.is_empty() {
@@ -1169,7 +1169,7 @@ impl DataFrame {
 
         let height = self.height();
         if series.len() == 1 && height > 1 {
-            series = series.expand_at_index(0, height);
+            series = series.new_from_index(0, height);
         }
 
         if series.len() == height || self.is_empty() {
@@ -1786,7 +1786,12 @@ impl DataFrame {
                 // no need to compute the sort indices and then take by these indices
                 // simply sort and return as frame
                 if self.width() == 1 && self.check_name_to_idx(s.name()).is_ok() {
-                    return Ok(s.sort_with(options).into_frame());
+                    let mut out = s.sort_with(options);
+                    if let Some((offset, len)) = slice {
+                        out = out.slice(offset, len);
+                    }
+
+                    return Ok(out.into_frame());
                 }
                 s.argsort(options)
             }
@@ -2037,7 +2042,7 @@ impl DataFrame {
         let new_col = f(col).into_series();
         match new_col.len() {
             1 => {
-                let new_col = new_col.expand_at_index(0, df_height);
+                let new_col = new_col.new_from_index(0, df_height);
                 let _ = mem::replace(col, new_col);
             }
             len if (len == df_height) => {
