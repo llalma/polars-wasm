@@ -1,3 +1,4 @@
+import typing
 from datetime import date, datetime
 from typing import Any
 
@@ -171,7 +172,7 @@ def test_init_ndarray(monkeypatch: Any) -> None:
         _ = pl.DataFrame(np.array([[1, 2], [3, 4]]), columns=["a"])
 
     # NumPy not available
-    monkeypatch.setattr(pl.internals.dataframe.frame, "_NUMPY_AVAILABLE", False)
+    monkeypatch.setattr(pl.internals.dataframe.frame, "_NUMPY_TYPE", lambda x: False)
     with pytest.raises(ValueError):
         pl.DataFrame(np.array([1, 2, 3]), columns=["a"])
 
@@ -324,7 +325,7 @@ def test_init_pandas(monkeypatch: Any) -> None:
     assert df.rows() == [(1.0, 2.0), (3.0, 4.0)]
 
     # pandas is not available
-    monkeypatch.setattr(pl.internals.dataframe.frame, "_PANDAS_AVAILABLE", False)
+    monkeypatch.setattr(pl.internals.dataframe.frame, "_PANDAS_TYPE", lambda x: False)
     with pytest.raises(ValueError):
         pl.DataFrame(pandas_df)
 
@@ -455,3 +456,125 @@ def test_from_dicts_missing_columns() -> None:
     ]
 
     assert pl.from_dicts(data).to_dict(False) == {"a": [1, None], "b": [None, 2]}
+
+
+@typing.no_type_check
+def test_from_rows_dtype() -> None:
+    # 50 is the default inference length
+    # 5182
+    df = pl.DataFrame(
+        data=[(None, None)] * 50 + [("1.23", None)],
+        columns=[("foo", pl.Utf8), ("bar", pl.Utf8)],
+        orient="row",
+    )
+    assert df.dtypes == [pl.Utf8, pl.Utf8]
+    assert df.null_count().row(0) == (50, 51)
+
+    type1 = [{"c1": 206, "c2": "type1", "c3": {"x1": "abcd", "x2": "jkl;"}}]
+    type2 = [
+        {"c1": 208, "c2": "type2", "c3": {"a1": "abcd", "a2": "jkl;", "a3": "qwerty"}}
+    ]
+
+    df = pl.DataFrame(
+        data=type1 * 50 + type2,
+        columns=[("c1", pl.Int32), ("c2", pl.Object), ("c3", pl.Object)],
+    )
+    assert df.dtypes == [pl.Int32, pl.Object, pl.Object]
+
+    # 50 is the default inference length
+    # 5266
+    type1 = [{"c1": 206, "c2": "type1", "c3": {"x1": "abcd", "x2": "jkl;"}}]
+    type2 = [
+        {"c1": 208, "c2": "type2", "c3": {"a1": "abcd", "a2": "jkl;", "a3": "qwerty"}}
+    ]
+
+    df = pl.DataFrame(
+        data=type1 * 50 + type2,
+        columns=[("c1", pl.Int32), ("c2", pl.Object), ("c3", pl.Object)],
+    )
+    assert df.dtypes == [pl.Int32, pl.Object, pl.Object]
+    assert df.null_count().row(0) == (0, 0, 0)
+
+
+def test_from_dicts_schema() -> None:
+    data = [{"a": 1, "b": 4}, {"a": 2, "b": 5}, {"a": 3, "b": 6}]
+
+    # let polars infer the dtypes
+    # but inform about a 3rd column
+    df = pl.from_dicts(data, schema={"a": pl.Unknown, "b": pl.Unknown, "c": pl.Int32})
+    assert df.dtypes == [pl.Int64, pl.Int64, pl.Int32]
+    assert df.to_dict(False) == {
+        "a": [1, 2, 3],
+        "b": [4, 5, 6],
+        "c": [None, None, None],
+    }
+
+
+def test_nested_read_dict_4143() -> None:
+    assert pl.from_dicts(
+        [
+            {
+                "id": 1,
+                "hint": [
+                    {"some_text_here": "text", "list_": [1, 2, 4]},
+                    {"some_text_here": "text", "list_": [1, 2, 4]},
+                ],
+            },
+            {
+                "id": 2,
+                "hint": [
+                    {"some_text_here": None, "list_": [1]},
+                    {"some_text_here": None, "list_": [2]},
+                ],
+            },
+        ]
+    ).to_dict(False) == {
+        "hint": [
+            [
+                {"some_text_here": "text", "list_": [1, 2, 4]},
+                {"some_text_here": "text", "list_": [1, 2, 4]},
+            ],
+            [
+                {"some_text_here": None, "list_": [1]},
+                {"some_text_here": None, "list_": [2]},
+            ],
+        ],
+        "id": [1, 2],
+    }
+
+    out = pl.from_dicts(
+        [
+            {
+                "id": 1,
+                "hint": [
+                    {"some_text_here": "text", "list_": [1, 2, 4]},
+                    {"some_text_here": "text", "list_": [1, 2, 4]},
+                ],
+            },
+            {
+                "id": 2,
+                "hint": [
+                    {"some_text_here": "text", "list_": []},
+                    {"some_text_here": "text", "list_": []},
+                ],
+            },
+        ]
+    )
+
+    assert out.dtypes == [
+        pl.Int64,
+        pl.List(pl.Struct({"some_text_here": pl.Utf8, "list_": pl.List(pl.Int64)})),
+    ]
+    assert out.to_dict(False) == {
+        "id": [1, 2],
+        "hint": [
+            [
+                {"some_text_here": "text", "list_": [1, 2, 4]},
+                {"some_text_here": "text", "list_": [1, 2, 4]},
+            ],
+            [
+                {"some_text_here": "text", "list_": []},
+                {"some_text_here": "text", "list_": []},
+            ],
+        ],
+    }

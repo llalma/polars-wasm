@@ -8,7 +8,6 @@ mod dispatch;
 mod fill_null;
 #[cfg(feature = "is_in")]
 mod is_in;
-#[cfg(any(feature = "is_in", feature = "list"))]
 mod list;
 mod nan;
 mod pow;
@@ -20,6 +19,7 @@ mod schema;
 #[cfg(feature = "search_sorted")]
 mod search_sorted;
 mod shift_and_fill;
+mod shrink_type;
 #[cfg(feature = "sign")]
 mod sign;
 #[cfg(feature = "strings")]
@@ -33,7 +33,6 @@ mod trigonometry;
 
 use std::fmt::{Display, Formatter};
 
-#[cfg(feature = "list")]
 pub(super) use list::ListFunction;
 use polars_core::prelude::*;
 #[cfg(feature = "serde")]
@@ -91,7 +90,6 @@ pub enum FunctionExpr {
         min: Option<AnyValue<'static>>,
         max: Option<AnyValue<'static>>,
     },
-    #[cfg(feature = "list")]
     ListExpr(ListFunction),
     #[cfg(feature = "dtype-struct")]
     StructExpr(StructFunction),
@@ -108,6 +106,7 @@ pub enum FunctionExpr {
     IsUnique,
     IsDuplicated,
     Coalesce,
+    ShrinkType,
 }
 
 impl Display for FunctionExpr {
@@ -147,7 +146,6 @@ impl Display for FunctionExpr {
                 (Some(_), None) => "clip_min",
                 _ => unreachable!(),
             },
-            #[cfg(feature = "list")]
             ListExpr(func) => return write!(f, "{}", func),
             #[cfg(feature = "dtype-struct")]
             StructExpr(func) => return write!(f, "{}", func),
@@ -161,6 +159,7 @@ impl Display for FunctionExpr {
             IsUnique => "is_unique",
             IsDuplicated => "is_duplicated",
             Coalesce => "coalesce",
+            ShrinkType => "shrink_dtype",
         };
         write!(f, "{}", s)
     }
@@ -301,7 +300,6 @@ impl From<FunctionExpr> for SpecialEq<Arc<dyn SeriesUdf>> {
             Clip { min, max } => {
                 map_owned!(clip::clip, min.clone(), max.clone())
             }
-            #[cfg(feature = "list")]
             ListExpr(lf) => {
                 use ListFunction::*;
                 match lf {
@@ -309,6 +307,7 @@ impl From<FunctionExpr> for SpecialEq<Arc<dyn SeriesUdf>> {
                     #[cfg(feature = "is_in")]
                     Contains => wrap!(list::contains),
                     Slice => wrap!(list::slice),
+                    Get => wrap!(list::get),
                 }
             }
             #[cfg(feature = "dtype-struct")]
@@ -331,6 +330,7 @@ impl From<FunctionExpr> for SpecialEq<Arc<dyn SeriesUdf>> {
             IsUnique => map!(dispatch::is_unique),
             IsDuplicated => map!(dispatch::is_duplicated),
             Coalesce => map_as_slice!(fill_null::coalesce),
+            ShrinkType => map_owned!(shrink_type::shrink),
         }
     }
 }
@@ -409,8 +409,26 @@ impl From<TemporalFunction> for SpecialEq<Arc<dyn SeriesUdf>> {
             Microsecond => map!(datetime::microsecond),
             Nanosecond => map!(datetime::nanosecond),
             TimeStamp(tu) => map!(datetime::timestamp, tu),
+            Truncate(every, offset) => map!(datetime::truncate, &every, &offset),
+            Round(every, offset) => map!(datetime::round, &every, &offset),
             #[cfg(feature = "timezones")]
             CastTimezone(tz) => map!(datetime::cast_timezone, &tz),
+            #[cfg(feature = "timezones")]
+            TzLocalize(tz) => map!(datetime::tz_localize, &tz),
+            DateRange {
+                name,
+                every,
+                closed,
+                tz,
+            } => {
+                map_as_slice!(
+                    datetime::date_range_dispatch,
+                    name.as_ref(),
+                    every,
+                    closed,
+                    tz.clone()
+                )
+            }
         }
     }
 }

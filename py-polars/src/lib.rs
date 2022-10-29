@@ -6,6 +6,8 @@ extern crate polars;
 
 pub mod apply;
 pub mod arrow_interop;
+#[cfg(feature = "csv-file")]
+mod batched_csv;
 pub mod conversion;
 pub mod dataframe;
 pub mod datatypes;
@@ -14,6 +16,7 @@ pub mod file;
 pub mod lazy;
 mod list_construction;
 pub mod npy;
+mod object;
 pub mod prelude;
 pub(crate) mod py_modules;
 pub mod series;
@@ -29,7 +32,7 @@ use lazy::ToExprs;
 use mimalloc::MiMalloc;
 use polars::functions::{diag_concat_df, hor_concat_df};
 use polars::prelude::Null;
-use polars_core::datatypes::TimeUnit;
+use polars_core::datatypes::{TimeUnit, TimeZone};
 use polars_core::prelude::{DataFrame, IntoSeries, IDX_DTYPE};
 use polars_core::POOL;
 use pyo3::exceptions::PyValueError;
@@ -114,8 +117,18 @@ fn fold(acc: PyExpr, lambda: PyObject, exprs: Vec<PyExpr>) -> PyExpr {
 }
 
 #[pyfunction]
+fn reduce(lambda: PyObject, exprs: Vec<PyExpr>) -> PyExpr {
+    dsl::reduce(lambda, exprs)
+}
+
+#[pyfunction]
 fn cumfold(acc: PyExpr, lambda: PyObject, exprs: Vec<PyExpr>, include_init: bool) -> PyExpr {
     dsl::cumfold(acc, lambda, exprs, include_init)
+}
+
+#[pyfunction]
+fn cumreduce(lambda: PyObject, exprs: Vec<PyExpr>) -> PyExpr {
+    dsl::cumreduce(lambda, exprs)
 }
 
 #[pyfunction]
@@ -437,10 +450,18 @@ pub fn map_mul(
     py: Python,
     pyexpr: Vec<PyExpr>,
     lambda: PyObject,
-    output_type: &PyAny,
+    output_type: Option<Wrap<DataType>>,
     apply_groups: bool,
+    returns_scalar: bool,
 ) -> PyExpr {
-    lazy::map_mul(&pyexpr, py, lambda, output_type, apply_groups)
+    lazy::map_mul(
+        &pyexpr,
+        py,
+        lambda,
+        output_type,
+        apply_groups,
+        returns_scalar,
+    )
 }
 
 #[pyfunction]
@@ -451,10 +472,34 @@ fn py_date_range(
     closed: Wrap<ClosedWindow>,
     name: &str,
     tu: Wrap<TimeUnit>,
+    tz: Option<TimeZone>,
 ) -> PySeries {
-    polars::time::date_range_impl(name, start, stop, Duration::parse(every), closed.0, tu.0)
-        .into_series()
-        .into()
+    polars::time::date_range_impl(
+        name,
+        start,
+        stop,
+        Duration::parse(every),
+        closed.0,
+        tu.0,
+        tz,
+    )
+    .into_series()
+    .into()
+}
+
+#[pyfunction]
+fn py_date_range_lazy(
+    start: PyExpr,
+    end: PyExpr,
+    every: &str,
+    closed: Wrap<ClosedWindow>,
+    name: String,
+    tz: Option<TimeZone>,
+) -> PyExpr {
+    let start = start.inner;
+    let end = end.inner;
+    let every = Duration::parse(every);
+    polars::lazy::dsl::functions::date_range(name, start, end, every, closed.0, tz).into()
 }
 
 #[pyfunction]
@@ -528,6 +573,8 @@ fn polars(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyLazyFrame>().unwrap();
     m.add_class::<PyLazyGroupBy>().unwrap();
     m.add_class::<dsl::PyExpr>().unwrap();
+    #[cfg(feature = "csv-file")]
+    m.add_class::<batched_csv::PyBatchedCsv>().unwrap();
     #[cfg(feature = "sql")]
     m.add_class::<sql::PySQLContext>().unwrap();
     m.add_wrapped(wrap_pyfunction!(col)).unwrap();
@@ -540,6 +587,8 @@ fn polars(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_wrapped(wrap_pyfunction!(lit)).unwrap();
     m.add_wrapped(wrap_pyfunction!(fold)).unwrap();
     m.add_wrapped(wrap_pyfunction!(cumfold)).unwrap();
+    m.add_wrapped(wrap_pyfunction!(reduce)).unwrap();
+    m.add_wrapped(wrap_pyfunction!(cumreduce)).unwrap();
     m.add_wrapped(wrap_pyfunction!(binary_expr)).unwrap();
     m.add_wrapped(wrap_pyfunction!(arange)).unwrap();
     m.add_wrapped(wrap_pyfunction!(pearson_corr)).unwrap();
@@ -567,6 +616,7 @@ fn polars(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_wrapped(wrap_pyfunction!(py_datetime)).unwrap();
     m.add_wrapped(wrap_pyfunction!(py_duration)).unwrap();
     m.add_wrapped(wrap_pyfunction!(py_date_range)).unwrap();
+    m.add_wrapped(wrap_pyfunction!(py_date_range_lazy)).unwrap();
     m.add_wrapped(wrap_pyfunction!(sum_exprs)).unwrap();
     m.add_wrapped(wrap_pyfunction!(min_exprs)).unwrap();
     m.add_wrapped(wrap_pyfunction!(max_exprs)).unwrap();

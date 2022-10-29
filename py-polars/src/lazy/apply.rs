@@ -3,9 +3,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyList;
 
 use crate::lazy::dsl::PyExpr;
-use crate::prelude::PyDataType;
 use crate::py_modules::POLARS;
 use crate::series::PySeries;
+use crate::Wrap;
 
 trait ToSeries {
     fn to_series(&self, py: Python, py_polars_module: &PyObject, name: &str) -> Series;
@@ -36,13 +36,6 @@ impl ToSeries for PyObject {
         let pyseries = py_pyseries.extract::<PySeries>(py).unwrap();
         // Finally get the actual Series
         pyseries.series
-    }
-}
-
-fn get_output_type(obj: &PyAny) -> Option<DataType> {
-    match obj.is_none() {
-        true => None,
-        false => Some(obj.extract::<PyDataType>().unwrap().into()),
     }
 }
 
@@ -91,7 +84,11 @@ pub(crate) fn binary_lambda(lambda: &PyObject, a: Series, b: Series) -> PolarsRe
         let result_series_wrapper =
             match lambda.call1(py, (python_series_wrapper_a, python_series_wrapper_b)) {
                 Ok(pyobj) => pyobj,
-                Err(e) => panic!("custom python function failed: {}", e.value(py)),
+                Err(e) => {
+                    return Err(PolarsError::ComputeError(
+                        format!("custom python function failed: {}", e.value(py)).into(),
+                    ))
+                }
             };
         let pyseries = if let Ok(expr) = result_series_wrapper.getattr(py, "_pyexpr") {
             let pyexpr = expr.extract::<PyExpr>(py).unwrap();
@@ -118,10 +115,10 @@ pub(crate) fn binary_lambda(lambda: &PyObject, a: Series, b: Series) -> PolarsRe
 pub fn map_single(
     pyexpr: &PyExpr,
     lambda: PyObject,
-    output_type: &PyAny,
+    output_type: Option<Wrap<DataType>>,
     agg_list: bool,
 ) -> PyExpr {
-    let output_type = get_output_type(output_type);
+    let output_type = output_type.map(|wrap| wrap.0);
 
     let output_type2 = output_type.clone();
     let function = move |s: Series| {
@@ -187,11 +184,10 @@ pub fn map_mul(
     pyexpr: &[PyExpr],
     py: Python,
     lambda: PyObject,
-    output_type: &PyAny,
+    output_type: Option<Wrap<DataType>>,
     apply_groups: bool,
+    returns_scalar: bool,
 ) -> PyExpr {
-    let output_type = get_output_type(output_type);
-
     // get the pypolars module
     // do the import outside of the function to prevent import side effects in a hot loop.
     let pypolars = PyModule::import(py, "polars").unwrap().to_object(py);
@@ -213,11 +209,11 @@ pub fn map_mul(
     let exprs = pyexpr.iter().map(|pe| pe.clone().inner).collect::<Vec<_>>();
 
     let output_map = GetOutput::map_field(move |fld| match output_type {
-        Some(ref dt) => Field::new(fld.name(), dt.clone()),
+        Some(ref dt) => Field::new(fld.name(), dt.0.clone()),
         None => fld.clone(),
     });
     if apply_groups {
-        polars::lazy::dsl::apply_multiple(function, exprs, output_map).into()
+        polars::lazy::dsl::apply_multiple(function, exprs, output_map, returns_scalar).into()
     } else {
         polars::lazy::dsl::map_multiple(function, exprs, output_map).into()
     }

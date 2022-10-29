@@ -182,6 +182,7 @@ Manipulation/ selection
     Series.head
     Series.interpolate
     Series.limit
+    Series.new_from_index
     Series.rechunk
     Series.rename
     Series.reshape
@@ -193,6 +194,7 @@ Manipulation/ selection
     Series.shift
     Series.shift_and_fill
     Series.shrink_to_fit
+    Series.shrink_dtype
     Series.shuffle
     Series.slice
     Series.sort
@@ -228,6 +230,7 @@ The following methods are available under the `Series.dt` attribute.
 
     DateTimeNameSpace.cast_time_unit
     DateTimeNameSpace.cast_time_zone
+    DateTimeNameSpace.with_time_zone
     DateTimeNameSpace.day
     DateTimeNameSpace.days
     DateTimeNameSpace.epoch
@@ -254,6 +257,8 @@ The following methods are available under the `Series.dt` attribute.
     DateTimeNameSpace.strftime
     DateTimeNameSpace.timestamp
     DateTimeNameSpace.truncate
+    DateTimeNameSpace.tz_localize
+    DateTimeNameSpace.round
     DateTimeNameSpace.week
     DateTimeNameSpace.weekday
     DateTimeNameSpace.with_time_unit
@@ -283,6 +288,7 @@ The following methods are available under the `Series.str` attribute.
     StringNameSpace.lengths
     StringNameSpace.ljust
     StringNameSpace.lstrip
+    StringNameSpace.n_chars
     StringNameSpace.replace
     StringNameSpace.replace_all
     StringNameSpace.rjust
@@ -329,6 +335,7 @@ The following methods are available under the `Series.arr` attribute.
     ListNameSpace.sort
     ListNameSpace.sum
     ListNameSpace.tail
+    ListNameSpace.to_struct
     ListNameSpace.unique
 
 Categories

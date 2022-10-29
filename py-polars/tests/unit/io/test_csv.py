@@ -13,7 +13,11 @@ import pytest
 import polars as pl
 from polars import DataType
 from polars.internals.type_aliases import TimeUnit
-from polars.testing import assert_frame_equal_local_categoricals, assert_series_equal
+from polars.testing import (
+    assert_frame_equal,
+    assert_frame_equal_local_categoricals,
+    assert_series_equal,
+)
 
 
 def test_quoted_date() -> None:
@@ -41,6 +45,9 @@ def test_to_from_buffer(df_no_lists: pl.DataFrame) -> None:
         [pl.col("cat").cast(pl.Categorical), pl.col("time").cast(pl.Time)]
     )
     assert_frame_equal_local_categoricals(df, read_df)
+
+    with pytest.raises(AssertionError):
+        assert_frame_equal_local_categoricals(df.select(["time", "cat"]), read_df)
 
 
 def test_to_from_file(io_test_dir: str, df_no_lists: pl.DataFrame) -> None:
@@ -852,3 +859,58 @@ def test_csv_categorical_categorical_merge() -> None:
     assert pl.read_csv(f, dtypes={"x": pl.Categorical}, sample_size=10).unique()[
         "x"
     ].to_list() == ["A", "B"]
+
+
+def test_batched_csv_reader(foods_csv: str) -> None:
+    reader = pl.read_csv_batched(foods_csv, batch_size=4)
+    batches = reader.next_batches(5)
+
+    assert batches is not None
+    assert len(batches) == 5
+    assert batches[0].to_dict(False) == {
+        "category": ["vegetables"],
+        "calories": [45],
+        "fats_g": [0.5],
+        "sugars_g": [2],
+    }
+    assert batches[-1].to_dict(False) == {
+        "category": ["meat"],
+        "calories": [120],
+        "fats_g": [10.0],
+        "sugars_g": [1],
+    }
+
+
+def test_batched_csv_reader_all_batches(foods_csv: str) -> None:
+    for new_columns in [None, ["Category", "Calories", "Fats_g", "Augars_g"]]:
+        out = pl.read_csv(foods_csv, new_columns=new_columns)
+        reader = pl.read_csv_batched(foods_csv, new_columns=new_columns, batch_size=4)
+        batches = reader.next_batches(5)
+        batched_dfs = []
+
+        while batches:
+            batched_dfs.extend(batches)
+            batches = reader.next_batches(5)
+
+        batched_concat_df = pl.concat(batched_dfs, rechunk=True)
+        assert_frame_equal(out, batched_concat_df)
+
+
+def test_csv_single_categorical_null() -> None:
+    f = io.BytesIO()
+    pl.DataFrame(
+        {
+            "x": ["A"],
+            "y": [None],
+            "z": ["A"],
+        }
+    ).write_csv(f)
+    f.seek(0)
+
+    df = pl.read_csv(
+        f,
+        dtypes={"y": pl.Categorical},
+    )
+
+    assert df.dtypes == [pl.Utf8, pl.Categorical, pl.Utf8]
+    assert df.to_dict(False) == {"x": ["A"], "y": [None], "z": ["A"]}

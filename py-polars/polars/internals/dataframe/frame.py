@@ -31,6 +31,7 @@ from polars.datatypes import (
     Int32,
     Int64,
     PolarsDataType,
+    Schema,
     UInt8,
     UInt16,
     UInt32,
@@ -39,6 +40,10 @@ from polars.datatypes import (
     get_idx_type,
     py_type_to_dtype,
 )
+from polars.dependencies import _NUMPY_TYPE, _PANDAS_TYPE, _PYARROW_TYPE
+from polars.dependencies import numpy as np
+from polars.dependencies import pandas as pd
+from polars.dependencies import pyarrow as pa
 from polars.exceptions import NoRowsReturned, TooManyRowsReturned
 from polars.internals.construction import (
     arrow_to_pydf,
@@ -69,31 +74,6 @@ try:
     _DOCUMENTING = False
 except ImportError:
     _DOCUMENTING = True
-
-try:
-    import numpy as np
-
-    _NUMPY_AVAILABLE = True
-except ImportError:
-    _NUMPY_AVAILABLE = False
-
-try:
-    import pyarrow as pa
-
-    # do not remove these
-    import pyarrow.compute
-    import pyarrow.parquet
-
-    _PYARROW_AVAILABLE = True
-except ImportError:
-    _PYARROW_AVAILABLE = False
-
-try:
-    import pandas as pd
-
-    _PANDAS_AVAILABLE = True
-except ImportError:
-    _PANDAS_AVAILABLE = False
 
 if sys.version_info >= (3, 8):
     from typing import Literal
@@ -289,10 +269,10 @@ class DataFrame:
         elif isinstance(data, dict):
             self._df = dict_to_pydf(data, columns=columns)
 
-        elif _NUMPY_AVAILABLE and isinstance(data, np.ndarray):
+        elif _NUMPY_TYPE(data) and isinstance(data, np.ndarray):
             self._df = numpy_to_pydf(data, columns=columns, orient=orient)
 
-        elif _PYARROW_AVAILABLE and isinstance(data, pa.Table):
+        elif _PYARROW_TYPE(data) and isinstance(data, pa.Table):
             self._df = arrow_to_pydf(data, columns=columns)
 
         elif isinstance(data, Sequence) and not isinstance(data, str):
@@ -303,12 +283,7 @@ class DataFrame:
         elif isinstance(data, pli.Series):
             self._df = series_to_pydf(data, columns=columns)
 
-        elif _PANDAS_AVAILABLE and isinstance(data, pd.DataFrame):
-            if not _PYARROW_AVAILABLE:  # pragma: no cover
-                raise ImportError(
-                    "'pyarrow' is required for converting a pandas DataFrame to a"
-                    " polars DataFrame."
-                )
+        elif _PANDAS_TYPE(data) and isinstance(data, pd.DataFrame):
             self._df = pandas_to_pydf(data, columns=columns)
 
         else:
@@ -326,8 +301,9 @@ class DataFrame:
         cls: type[DF],
         data: Sequence[dict[str, Any]],
         infer_schema_length: int | None = 100,
+        schema: Schema | None = None,
     ) -> DF:
-        pydf = PyDataFrame.read_dicts(data, infer_schema_length)
+        pydf = PyDataFrame.read_dicts(data, infer_schema_length, schema)
         return cls._from_pydf(pydf)
 
     @classmethod
@@ -1187,7 +1163,7 @@ class DataFrame:
 
                 return idxs.cast(idx_type)
 
-        if _NUMPY_AVAILABLE and isinstance(idxs, np.ndarray):
+        if _NUMPY_TYPE(idxs) and isinstance(idxs, np.ndarray):
             if idxs.ndim != 1:
                 raise ValueError("Only 1D numpy array is supported as index.")
             if idxs.dtype.kind in ("i", "u"):
@@ -1309,16 +1285,10 @@ class DataFrame:
                     df = self.__class__(series_list)
                     return df[row_selection]
 
-                # single slice
-                # df[:, unknown]
-                series = self.__getitem__(col_selection)
-                # s[:]
-                pli.wrap_s(series[row_selection])
-
             # df[2, :] (select row as df)
             if isinstance(row_selection, int):
                 if isinstance(col_selection, (slice, list)) or (
-                    _NUMPY_AVAILABLE and isinstance(col_selection, np.ndarray)
+                    _NUMPY_TYPE(col_selection) and isinstance(col_selection, np.ndarray)
                 ):
                     df = self[:, col_selection]
                     return df.slice(row_selection, 1)
@@ -1365,7 +1335,7 @@ class DataFrame:
         # select rows by numpy mask or index
         # df[np.array([1, 2, 3])]
         # df[np.array([True, False, True])]
-        if _NUMPY_AVAILABLE and isinstance(item, np.ndarray):
+        if _NUMPY_TYPE(item) and isinstance(item, np.ndarray):
             if item.ndim != 1:
                 raise ValueError("Only a 1D-Numpy array is supported as index.")
             if item.dtype.kind in ("i", "u"):
@@ -1415,8 +1385,6 @@ class DataFrame:
         # df[["C", "D"]]
         elif isinstance(key, list):
             # TODO: Use python sequence constructors
-            if not _NUMPY_AVAILABLE:
-                raise ImportError("'numpy' is required for this functionality.")
             value = np.array(value)
             if value.ndim != 2:
                 raise ValueError("can only set multiple columns with 2D matrix")
@@ -1521,11 +1489,6 @@ class DataFrame:
         bar: [["a","b","c","d","e","f"]]
 
         """
-        if not _PYARROW_AVAILABLE:  # pragma: no cover
-            raise ImportError(
-                "'pyarrow' is required for converting a polars DataFrame to an Arrow"
-                " Table."
-            )
         record_batches = self._df.to_arrow()
         return pa.Table.from_batches(record_batches)
 
@@ -1680,8 +1643,6 @@ class DataFrame:
         <class 'numpy.ndarray'>
 
         """
-        if not _NUMPY_AVAILABLE:
-            raise ImportError("'numpy' is required for this functionality.")
         out = self._df.to_numpy()
         if out is None:
             return np.vstack(
@@ -1727,8 +1688,6 @@ class DataFrame:
         <class 'pandas.core.frame.DataFrame'>
 
         """
-        if not _PYARROW_AVAILABLE:  # pragma: no cover
-            raise ImportError("'pyarrow' is required when using to_pandas().")
         record_batches = self._df.to_pandas()
         tbl = pa.Table.from_batches(record_batches)
         return tbl.to_pandas(*args, date_as_object=date_as_object, **kwargs)
@@ -2098,7 +2057,6 @@ class DataFrame:
             Choose "lz4" for fast compression/decompression.
             Choose "snappy" for more backwards compatibility guarantees
             when you deal with older parquet readers.
-            Method "uncompressed" is not supported by pyarrow.
         compression_level
             The level of compression to use. Higher compression means smaller files on
             disk.
@@ -2112,9 +2070,10 @@ class DataFrame:
             Size of the row groups in number of rows.
             If None (default), the chunks of the `DataFrame` are
             used. Writing in smaller chunks may reduce memory pressure and improve
-            writing speeds. This argument has no effect if 'pyarrow' is used.
+            writing speeds. If None and ``use_pyarrow=True``, the row group size
+            will be the minimum of the DataFrame size and 64 * 1024 * 1024.
         use_pyarrow
-            Use C++ parquet implementation vs rust parquet implementation.
+            Use C++ parquet implementation vs Rust parquet implementation.
             At the moment C++ supports more features.
         pyarrow_options
             Arguments passed to ``pyarrow.parquet.write_table``.
@@ -2126,14 +2085,7 @@ class DataFrame:
             file = format_path(file)
 
         if use_pyarrow:
-            if not _PYARROW_AVAILABLE:  # pragma: no cover
-                raise ImportError(
-                    "'pyarrow' is required when using"
-                    " 'write_parquet(..., use_pyarrow=True)'."
-                )
-
             tbl = self.to_arrow()
-
             data = {}
 
             for i, column in enumerate(tbl):
@@ -2144,12 +2096,19 @@ class DataFrame:
                     name = column._name
 
                 data[name] = column
+
             tbl = pa.table(data)
+
+            # do not remove this
+            # needed below
+            import pyarrow.parquet  # noqa: F401
 
             pa.parquet.write_table(
                 table=tbl,
                 where=file,
-                compression=compression,
+                row_group_size=row_group_size,
+                compression=None if compression == "uncompressed" else compression,
+                compression_level=compression_level,
                 write_statistics=statistics,
                 **(pyarrow_options or {}),
             )
@@ -2476,7 +2435,7 @@ class DataFrame:
         └─────┴─────┴─────┘
 
         """
-        if _NUMPY_AVAILABLE and isinstance(predicate, np.ndarray):
+        if _NUMPY_TYPE(predicate) and isinstance(predicate, np.ndarray):
             predicate = pli.Series(predicate)
 
         return (
@@ -3405,7 +3364,7 @@ class DataFrame:
         │ ---                 ┆ ---                 ┆ ---                 │
         │ datetime[μs]        ┆ datetime[μs]        ┆ datetime[μs]        │
         ╞═════════════════════╪═════════════════════╪═════════════════════╡
-        │ 2021-12-16 00:00:00 ┆ 2021-12-16 00:00:00 ┆ 2021-12-16 00:00:00 │
+        │ 2021-12-15 23:00:00 ┆ 2021-12-16 00:00:00 ┆ 2021-12-16 00:00:00 │
         ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
         │ 2021-12-16 00:00:00 ┆ 2021-12-16 00:30:00 ┆ 2021-12-16 01:00:00 │
         ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
@@ -3427,7 +3386,7 @@ class DataFrame:
         │ ---                 ┆ ---                 ┆ ---                 ┆ ---        │
         │ datetime[μs]        ┆ datetime[μs]        ┆ datetime[μs]        ┆ u32        │
         ╞═════════════════════╪═════════════════════╪═════════════════════╪════════════╡
-        │ 2021-12-15 23:00:00 ┆ 2021-12-16 00:00:00 ┆ 2021-12-16 00:00:00 ┆ 1          │
+        │ 2021-12-15 23:00:00 ┆ 2021-12-16 00:00:00 ┆ 2021-12-15 23:00:00 ┆ 1          │
         ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
         │ 2021-12-16 00:00:00 ┆ 2021-12-16 01:00:00 ┆ 2021-12-16 00:00:00 ┆ 2          │
         ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
@@ -3475,7 +3434,7 @@ class DataFrame:
         │ ---                 ┆ ---        │
         │ datetime[μs]        ┆ u32        │
         ╞═════════════════════╪════════════╡
-        │ 2021-12-16 00:00:00 ┆ 1          │
+        │ 2021-12-15 23:00:00 ┆ 1          │
         ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
         │ 2021-12-16 00:00:00 ┆ 3          │
         ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
@@ -3534,7 +3493,7 @@ class DataFrame:
         │ ---    ┆ ---                 ┆ ---                 ┆ ---                 ┆ ---        │
         │ str    ┆ datetime[μs]        ┆ datetime[μs]        ┆ datetime[μs]        ┆ u32        │
         ╞════════╪═════════════════════╪═════════════════════╪═════════════════════╪════════════╡
-        │ a      ┆ 2021-12-15 23:00:00 ┆ 2021-12-16 00:00:00 ┆ 2021-12-16 00:00:00 ┆ 1          │
+        │ a      ┆ 2021-12-15 23:00:00 ┆ 2021-12-16 00:00:00 ┆ 2021-12-15 23:00:00 ┆ 1          │
         ├╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
         │ a      ┆ 2021-12-16 00:00:00 ┆ 2021-12-16 01:00:00 ┆ 2021-12-16 00:00:00 ┆ 3          │
         ├╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
@@ -3549,12 +3508,11 @@ class DataFrame:
         │ b      ┆ 2021-12-16 02:00:00 ┆ 2021-12-16 03:00:00 ┆ 2021-12-16 02:00:00 ┆ 1          │
         └────────┴─────────────────────┴─────────────────────┴─────────────────────┴────────────┘
 
-
         Dynamic groupby on an index column
 
         >>> df = pl.DataFrame(
         ...     {
-        ...         "idx": np.arange(6),
+        ...         "idx": pl.arange(0, 6, eager=True),
         ...         "A": ["A", "A", "B", "B", "B", "C"],
         ...     }
         ... )
@@ -5215,7 +5173,10 @@ class DataFrame:
 
     def select(
         self: DF,
-        exprs: str | pli.Expr | pli.Series | Sequence[str | pli.Expr | pli.Series],
+        exprs: str
+        | pli.Expr
+        | pli.Series
+        | Sequence[str | pli.Expr | pli.Series | pli.WhenThen | pli.WhenThenThen],
     ) -> DF:
         """
         Select columns from this DataFrame.
@@ -5795,24 +5756,22 @@ class DataFrame:
         --------
         >>> df = pl.DataFrame(
         ...     {
-        ...         "foo": [1, 2, 3],
-        ...         "bar": [6, 7, 8],
-        ...         "ham": ["a", "b", "c"],
+        ...         "foo": [1, 2],
+        ...         "bar": [3, 4],
+        ...         "ham": ["a", "b"],
         ...     }
         ... )
         >>> df.to_dummies()
-        shape: (3, 9)
-        ┌───────┬───────┬───────┬───────┬───────┬───────┬───────┬───────┬───────┐
-        │ foo_1 ┆ foo_2 ┆ foo_3 ┆ bar_6 ┆ bar_7 ┆ bar_8 ┆ ham_a ┆ ham_b ┆ ham_c │
-        │ ---   ┆ ---   ┆ ---   ┆ ---   ┆ ---   ┆ ---   ┆ ---   ┆ ---   ┆ ---   │
-        │ u8    ┆ u8    ┆ u8    ┆ u8    ┆ u8    ┆ u8    ┆ u8    ┆ u8    ┆ u8    │
-        ╞═══════╪═══════╪═══════╪═══════╪═══════╪═══════╪═══════╪═══════╪═══════╡
-        │ 1     ┆ 0     ┆ 0     ┆ 1     ┆ 0     ┆ 0     ┆ 1     ┆ 0     ┆ 0     │
-        ├╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┤
-        │ 0     ┆ 1     ┆ 0     ┆ 0     ┆ 1     ┆ 0     ┆ 0     ┆ 1     ┆ 0     │
-        ├╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┤
-        │ 0     ┆ 0     ┆ 1     ┆ 0     ┆ 0     ┆ 1     ┆ 0     ┆ 0     ┆ 1     │
-        └───────┴───────┴───────┴───────┴───────┴───────┴───────┴───────┴───────┘
+        shape: (2, 6)
+        ┌───────┬───────┬───────┬───────┬───────┬───────┐
+        │ foo_1 ┆ foo_2 ┆ bar_3 ┆ bar_4 ┆ ham_a ┆ ham_b │
+        │ ---   ┆ ---   ┆ ---   ┆ ---   ┆ ---   ┆ ---   │
+        │ u8    ┆ u8    ┆ u8    ┆ u8    ┆ u8    ┆ u8    │
+        ╞═══════╪═══════╪═══════╪═══════╪═══════╪═══════╡
+        │ 1     ┆ 0     ┆ 1     ┆ 0     ┆ 1     ┆ 0     │
+        ├╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┤
+        │ 0     ┆ 1     ┆ 0     ┆ 1     ┆ 0     ┆ 1     │
+        └───────┴───────┴───────┴───────┴───────┴───────┘
 
         """
         if isinstance(columns, str):
@@ -6292,10 +6251,10 @@ class DataFrame:
         shape: (4,)
         Series: '' [u64]
         [
-            1381515935931787907
-            14326417405130769253
-            12561864296213327929
-            11391467306893437193
+            4238614331852490969
+            17976148875586754089
+            4702262519505526977
+            18144177983981041107
         ]
 
         """

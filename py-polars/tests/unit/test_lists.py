@@ -7,12 +7,16 @@ import numpy as np
 import pandas as pd
 
 import polars as pl
-from polars.testing import assert_series_equal, verify_series_and_expr_api
+from polars.testing import assert_series_equal
+from polars.testing._private import verify_series_and_expr_api
 
 
 def test_list_arr_get() -> None:
     a = pl.Series("a", [[1, 2, 3], [4, 5], [6, 7, 8, 9]])
     out = a.arr.get(0)
+    expected = pl.Series("a", [1, 4, 6])
+    assert_series_equal(out, expected)
+    out = a.arr[0]
     expected = pl.Series("a", [1, 4, 6])
     assert_series_equal(out, expected)
     out = a.arr.first()
@@ -45,6 +49,13 @@ def test_list_arr_get() -> None:
         "get_1": [None, None, None, 5, 8, 11],
         "get_2": [None, None, None, 6, 9, None],
         "get_3": [None, None, None, None, None, None],
+    }
+
+    # get by indexes where some are out of bounds
+    df = pl.DataFrame({"cars": [[1, 2, 3], [2, 3], [4], []], "indexes": [-2, 1, -3, 0]})
+
+    assert df.select([pl.col("cars").arr.get("indexes")]).to_dict(False) == {
+        "cars": [2, 3, None, None]
     }
 
 

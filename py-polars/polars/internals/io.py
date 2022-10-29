@@ -5,18 +5,11 @@ from contextlib import contextmanager
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any, BinaryIO, ContextManager, Iterator, TextIO, overload
-from urllib.request import urlopen
 
+import polars.internals as pli
 from polars.datatypes import DataType
+from polars.dependencies import _FSSPEC_AVAILABLE, fsspec
 from polars.utils import format_path
-
-try:
-    import fsspec
-    from fsspec.utils import infer_storage_options
-
-    _WITH_FSSPEC = True
-except ImportError:
-    _WITH_FSSPEC = False
 
 try:
     from polars.polars import ipc_schema as _ipc_schema
@@ -26,6 +19,8 @@ except ImportError:
 
 
 def _process_http_file(path: str, encoding: str | None = None) -> BytesIO:
+    from urllib.request import urlopen
+
     with urlopen(path) as f:
         if not encoding or encoding in {"utf8", "utf8-lossy"}:
             return BytesIO(f.read())
@@ -116,14 +111,18 @@ def _prepare_file_arg(
         # to read from http
         if file.startswith("http"):
             return _process_http_file(file, encoding_str)
-        if _WITH_FSSPEC:
+        if _FSSPEC_AVAILABLE:
+            from fsspec.utils import infer_storage_options
+
             if not has_non_utf8_non_utf8_lossy_encoding:
                 if infer_storage_options(file)["protocol"] == "file":
                     return managed_file(format_path(file))
             kwargs["encoding"] = encoding
             return fsspec.open(file, **kwargs)
     if isinstance(file, list) and bool(file) and all(isinstance(f, str) for f in file):
-        if _WITH_FSSPEC:
+        if _FSSPEC_AVAILABLE:
+            from fsspec.utils import infer_storage_options
+
             if not has_non_utf8_non_utf8_lossy_encoding:
                 if all(infer_storage_options(f)["protocol"] == "file" for f in file):
                     return managed_file([format_path(f) for f in file])
@@ -185,3 +184,13 @@ def _is_local_file(file: str) -> bool:
         return True
     except StopIteration:
         return False
+
+
+def _update_columns(df: pli.DataFrame, new_columns: list[str]) -> pli.DataFrame:
+    if df.width > len(new_columns):
+        cols = df.columns
+        for i, name in enumerate(new_columns):
+            cols[i] = name
+        new_columns = cols
+    df.columns = new_columns
+    return df

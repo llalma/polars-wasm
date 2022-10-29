@@ -1,4 +1,4 @@
-name: Create macOs universal2/aarch64-apple-darwin python release
+name: Create Python release macOs universal2/aarch64-apple-darwin
 
 on:
   push:
@@ -26,7 +26,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2022-10-06
+          toolchain: nightly-2022-10-24
 
       - name: Set up Rust targets
         run: rustup target add aarch64-apple-darwin

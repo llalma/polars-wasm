@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 
@@ -24,6 +23,7 @@ use pyo3::{PyAny, PyResult};
 use crate::dataframe::PyDataFrame;
 use crate::error::PyPolarsErr;
 use crate::lazy::dataframe::PyLazyFrame;
+use crate::object::OBJECT_NAME;
 use crate::prelude::*;
 use crate::py_modules::POLARS;
 use crate::series::PySeries;
@@ -65,7 +65,7 @@ impl<T> From<T> for Wrap<T> {
 
 pub(crate) fn get_pyseq(obj: &PyAny) -> PyResult<(&PySequence, usize)> {
     let seq = <PySequence as PyTryFrom>::try_from(obj)?;
-    let len = seq.len()? as usize;
+    let len = seq.len()?;
     Ok((seq, len))
 }
 
@@ -343,7 +343,7 @@ impl FromPyObject<'_> for Wrap<DataType> {
                     "Float32" => DataType::Float32,
                     "Float64" => DataType::Float64,
                     #[cfg(feature = "object")]
-                    "Object" => DataType::Object("unknown"),
+                    "Object" => DataType::Object(OBJECT_NAME),
                     "List" => DataType::List(Box::new(DataType::Boolean)),
                     "Null" => DataType::Null,
                     "Unknown" => DataType::Unknown,
@@ -469,11 +469,12 @@ impl ToPyObject for Wrap<&DatetimeChunked> {
         let py_date_dtype = pl.getattr("Datetime").unwrap();
 
         let tu = Wrap(self.0.time_unit()).to_object(py);
+        let tz = self.0.time_zone().to_object(py);
 
         let iter = self
             .0
             .into_iter()
-            .map(|opt_v| opt_v.map(|v| convert.call1((v, py_date_dtype, &tu)).unwrap()));
+            .map(|opt_v| opt_v.map(|v| convert.call1((v, py_date_dtype, &tu, &tz)).unwrap()));
         PyList::new(py, iter).into_py(py)
     }
 }
@@ -742,7 +743,7 @@ impl Default for ObjectValue {
 impl<'a, T: NativeType + FromPyObject<'a>> FromPyObject<'a> for Wrap<Vec<T>> {
     fn extract(obj: &'a PyAny) -> PyResult<Self> {
         let seq = <PySequence as PyTryFrom>::try_from(obj)?;
-        let mut v = Vec::with_capacity(seq.len().unwrap_or(0) as usize);
+        let mut v = Vec::with_capacity(seq.len().unwrap_or(0));
         for item in seq.iter()? {
             v.push(item?.extract::<T>()?);
         }
@@ -756,7 +757,7 @@ pub(crate) fn dicts_to_rows(
 ) -> PyResult<(Vec<Row>, Vec<String>)> {
     let (dicts, len) = get_pyseq(records)?;
 
-    let mut key_names = BTreeSet::new();
+    let mut key_names = PlIndexSet::new();
     for d in dicts.iter()?.take(infer_schema_len) {
         let d = d?;
         let d = d.downcast::<PyDict>()?;
@@ -1102,7 +1103,7 @@ pub(crate) fn parse_parquet_compression(
         "zstd" => ParquetCompression::Zstd(
             compression_level
                 .map(|lvl| {
-                    ZstdLevel::try_new(lvl as i32)
+                    ZstdLevel::try_new(lvl)
                         .map_err(|e| PyValueError::new_err(format!("{:?}", e)))
                 })
                 .transpose()?,

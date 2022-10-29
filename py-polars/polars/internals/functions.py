@@ -1,17 +1,26 @@
 from __future__ import annotations
 
+import sys
+import typing
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Sequence, overload
 
 from polars import internals as pli
-from polars.datatypes import Categorical, Date, Float64
+from polars.datatypes import Categorical, Date, Float64, PolarsDataType
 from polars.utils import _datetime_to_pl_timestamp, _timedelta_to_pl_duration
+
+if sys.version_info >= (3, 10):
+    from typing import Literal
+else:
+    from typing_extensions import Literal
+
 
 try:
     from polars.polars import concat_df as _concat_df
     from polars.polars import concat_lf as _concat_lf
     from polars.polars import concat_series as _concat_series
     from polars.polars import py_date_range as _py_date_range
+    from polars.polars import py_date_range_lazy as _py_date_range_lazy
     from polars.polars import py_diag_concat_df as _diag_concat_df
     from polars.polars import py_hor_concat_df as _hor_concat_df
 
@@ -102,7 +111,7 @@ def concat(
     rechunk
         Make sure that all data is in contiguous memory.
     how : {'vertical', 'diagonal', 'horizontal'}
-        Only used if the items are DataFrames.
+        Lazy only supports the 'vertical' strategy.
 
         - Vertical: applies multiple `vstack` operations.
         - Diagonal: finds a union between the column schemas and fills missing column
@@ -147,7 +156,10 @@ def concat(
                 f"how must be one of {{'vertical', 'diagonal'}}, got {how}"
             )
     elif isinstance(first, pli.LazyFrame):
-        return pli.wrap_ldf(_concat_lf(items, rechunk, parallel))
+        if how == "vertical":
+            return pli.wrap_ldf(_concat_lf(items, rechunk, parallel))
+        else:
+            raise ValueError("Lazy only allows 'vertical' concat strategy.")
     elif isinstance(first, pli.Series):
         out = pli.wrap_s(_concat_series(items))
     elif isinstance(first, pli.Expr):
@@ -174,14 +186,78 @@ def _interval_granularity(interval: str) -> str:
     return interval[-2:].lstrip("0123456789")
 
 
+@overload
 def date_range(
-    low: date | datetime,
-    high: date | datetime,
+    low: pli.Expr,
+    high: date | datetime | pli.Expr | str,
     interval: str | timedelta,
+    *,
+    lazy: Literal[False] = ...,
     closed: ClosedWindow = "both",
     name: str | None = None,
     time_unit: TimeUnit | None = None,
+    time_zone: str | None = None,
+) -> pli.Expr:
+    ...
+
+
+@overload
+def date_range(
+    low: date | datetime | pli.Expr | str,
+    high: pli.Expr,
+    interval: str | timedelta,
+    *,
+    lazy: Literal[False] = ...,
+    closed: ClosedWindow = "both",
+    name: str | None = None,
+    time_unit: TimeUnit | None = None,
+    time_zone: str | None = None,
+) -> pli.Expr:
+    ...
+
+
+@overload
+def date_range(
+    low: date | datetime | str,
+    high: date | datetime | str,
+    interval: str | timedelta,
+    *,
+    lazy: Literal[False] = ...,
+    closed: ClosedWindow = "both",
+    name: str | None = None,
+    time_unit: TimeUnit | None = None,
+    time_zone: str | None = None,
 ) -> pli.Series:
+    ...
+
+
+@overload
+def date_range(
+    low: date | datetime | pli.Expr | str,
+    high: date | datetime | pli.Expr | str,
+    interval: str | timedelta,
+    *,
+    lazy: Literal[True],
+    closed: ClosedWindow = "both",
+    name: str | None = None,
+    time_unit: TimeUnit | None = None,
+    time_zone: str | None = None,
+) -> pli.Expr:
+    ...
+
+
+@typing.no_type_check
+def date_range(
+    low: date | datetime | pli.Expr | str,
+    high: date | datetime | pli.Expr | str,
+    interval: str | timedelta,
+    *,
+    lazy: bool = False,
+    closed: ClosedWindow = "both",
+    name: str | None = None,
+    time_unit: TimeUnit | None = None,
+    time_zone: str | None = None,
+) -> pli.Series | pli.Expr:
     """
     Create a range of type `Datetime` (or `Date`).
 
@@ -195,12 +271,17 @@ def date_range(
         Interval periods. It can be a python timedelta object, like
         ``timedelta(days=10)``, or a polars duration string, such as ``3d12h4m25s``
         representing 3 days, 12 hours, 4 minutes, and 25 seconds.
+    lazy:
+        Return an expression.
     closed : {'both', 'left', 'right', 'none'}
         Define whether the temporal window interval is closed or not.
     name
         Name of the output Series.
     time_unit : {None, 'ns', 'us', 'ms'}
         Set the time unit.
+    time_zone:
+        Optional timezone
+
 
     Notes
     -----
@@ -253,8 +334,31 @@ def date_range(
     elif " " in interval:
         interval = interval.replace(" ", "")
 
+    if isinstance(low, pli.Expr) or isinstance(high, pli.Expr) or lazy:
+        low = pli.expr_to_lit_or_expr(low, str_to_lit=True)
+        high = pli.expr_to_lit_or_expr(high, str_to_lit=True)
+        return pli.wrap_expr(
+            _py_date_range_lazy(low, high, interval, closed, name, time_zone)
+        )
+
     low, low_is_date = _ensure_datetime(low)
     high, high_is_date = _ensure_datetime(high)
+
+    if low.tzinfo is not None or time_zone is not None:
+        if low.tzinfo != high.tzinfo:
+            raise ValueError(
+                "Cannot mix different timezone aware datetimes."
+                f" Got: '{low.tzinfo}' and '{high.tzinfo}'."
+            )
+
+        if time_zone is not None and low.tzinfo is not None:
+            if str(low.tzinfo) != time_zone:
+                raise ValueError(
+                    "Given time_zone is different from that timezone aware datetimes."
+                    f" Given: '{time_zone}', got: '{low.tzinfo}'."
+                )
+        if time_zone is None:
+            time_zone = str(low.tzinfo)
 
     tu: TimeUnit
     if time_unit is not None:
@@ -269,7 +373,9 @@ def date_range(
     if name is None:
         name = ""
 
-    dt_range = pli.wrap_s(_py_date_range(start, stop, interval, closed, name, tu))
+    dt_range = pli.wrap_s(
+        _py_date_range(start, stop, interval, closed, name, tu, time_zone)
+    )
     if (
         low_is_date
         and high_is_date
@@ -552,3 +658,49 @@ def align_frames(
         aligned_frames = [df.select(select) for df in aligned_frames]
 
     return [df.collect() for df in aligned_frames] if eager else aligned_frames
+
+
+def ones(n: int, dtype: PolarsDataType | None = None) -> pli.Series:
+    """
+    Return a new Series of given length and type, filled with ones.
+
+    Parameters
+    ----------
+    n
+        Number of elements in the ``Series``
+    dtype
+        DataType of the elements, defaults to ``polars.Float64``
+
+    Notes
+    -----
+    In the lazy API you should probably not use this, but use ``lit(1)``
+    instead.
+
+    """
+    s = pli.Series([1.0])
+    if dtype:
+        s = s.cast(dtype)
+    return s.new_from_index(0, n)
+
+
+def zeros(n: int, dtype: PolarsDataType | None = None) -> pli.Series:
+    """
+    Return a new Series of given length and type, filled with zeros.
+
+    Parameters
+    ----------
+    n
+        Number of elements in the ``Series``
+    dtype
+        DataType of the elements, defaults to ``polars.Float64``
+
+    Notes
+    -----
+    In the lazy API you should probably not use this, but use ``lit(0)``
+    instead.
+
+    """
+    s = pli.Series([0.0])
+    if dtype:
+        s = s.cast(dtype)
+    return s.new_from_index(0, n)

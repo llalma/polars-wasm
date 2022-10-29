@@ -123,25 +123,6 @@ def test_agg() -> None:
     assert res.row(0) == (1, 1.0)
 
 
-def test_fold() -> None:
-    df = pl.DataFrame({"a": [1, 2, 3], "b": [1.0, 2.0, 3.0]})
-    out = df.select(
-        [
-            pl.sum(["a", "b"]),
-            pl.max(["a", pl.col("b") ** 2]),
-            pl.min(["a", pl.col("b") ** 2]),
-        ]
-    )
-    assert out["sum"].series_equal(pl.Series("sum", [2.0, 4.0, 6.0]))
-    assert out["max"].series_equal(pl.Series("max", [1.0, 4.0, 9.0]))
-    assert out["min"].series_equal(pl.Series("min", [1.0, 2.0, 3.0]))
-
-    out = df.select(
-        pl.fold(acc=lit(0), f=lambda acc, x: acc + x, exprs=pl.col("*")).alias("foo")
-    )
-    assert out["foo"].to_list() == [2, 4, 6]
-
-
 def test_or() -> None:
     df = pl.DataFrame({"a": [1, 2, 3], "b": [1.0, 2.0, 3.0]})
     out = df.lazy().filter((pl.col("a") == 1) | (pl.col("b") > 2)).collect()
@@ -1183,7 +1164,7 @@ def test_is_between(fruits_cars: pl.DataFrame) -> None:
         pl.Series("is_between", [False, False, True, False, False])
     )
 
-    result = fruits_cars.select(pl.col("A").is_between(2, 4, [False, False]))[
+    result = fruits_cars.select(pl.col("A").is_between(2, 4, (False, False)))[
         "is_between"
     ]
     assert result.series_equal(
@@ -1195,21 +1176,21 @@ def test_is_between(fruits_cars: pl.DataFrame) -> None:
         pl.Series("is_between", [False, True, True, True, False])
     )
 
-    result = fruits_cars.select(pl.col("A").is_between(2, 4, [True, True]))[
+    result = fruits_cars.select(pl.col("A").is_between(2, 4, (True, True)))[
         "is_between"
     ]
     assert result.series_equal(
         pl.Series("is_between", [False, True, True, True, False])
     )
 
-    result = fruits_cars.select(pl.col("A").is_between(2, 4, [False, True]))[
+    result = fruits_cars.select(pl.col("A").is_between(2, 4, (False, True)))[
         "is_between"
     ]
     assert result.series_equal(
         pl.Series("is_between", [False, False, True, True, False])
     )
 
-    result = fruits_cars.select(pl.col("A").is_between(2, 4, [True, False]))[
+    result = fruits_cars.select(pl.col("A").is_between(2, 4, (True, False)))[
         "is_between"
     ]
     assert result.series_equal(

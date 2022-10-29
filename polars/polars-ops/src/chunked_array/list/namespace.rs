@@ -4,6 +4,7 @@ use std::fmt::Write;
 use polars_arrow::kernels::list::sublist_get;
 use polars_arrow::prelude::ValueSize;
 use polars_core::chunked_array::builder::get_list_builder;
+#[cfg(feature = "diff")]
 use polars_core::series::ops::NullBehavior;
 use polars_core::utils::{try_get_supertype, CustomIterTools};
 
@@ -42,7 +43,7 @@ fn cast_rhs(
             if s.len() == 1 {
                 if allow_broadcast {
                     // broadcast JIT
-                    *s = s.expand_at_index(0, length)
+                    *s = s.new_from_index(0, length)
                 }
                 // else do nothing
             } else {
@@ -133,9 +134,9 @@ pub trait ListNameSpaceImpl: AsList {
     }
 
     #[must_use]
-    fn lst_sort(&self, reverse: bool) -> ListChunked {
+    fn lst_sort(&self, options: SortOptions) -> ListChunked {
         let ca = self.as_list();
-        ca.apply_amortized(|s| s.as_ref().sort(reverse))
+        ca.apply_amortized(|s| s.as_ref().sort_with(options))
     }
 
     #[must_use]
