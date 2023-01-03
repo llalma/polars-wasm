@@ -455,7 +455,6 @@ where
 {
     /// Create a new CsvReader from a file/ stream
     fn new(reader: R) -> Self {
-        console::log_1(&"here".into());
         CsvReader {
             reader,
             rechunk: true,
@@ -490,11 +489,14 @@ where
 
     /// Read the file and create the DataFrame.
     fn finish(mut self) -> PolarsResult<DataFrame> {
+        console::log_1(&"finish1".into());
         let rechunk = self.rechunk;
         let schema_overwrite = self.schema_overwrite;
         let dtype_overwrite = self.dtype_overwrite;
         let should_parse_dates = self.parse_dates;
         let low_memory = self.low_memory;
+
+        console::log_1(&"finish2".into());
 
         #[cfg(feature = "dtype-categorical")]
         let mut _cat_lock = None;
@@ -524,6 +526,7 @@ where
                     _cat_lock = Some(polars_core::IUseStringCache::new())
                 }
             }
+            console::log_1(&"finish3".into());
             let mut csv_reader = self.core_reader(self.schema, vec![])?;
             csv_reader.as_df()?
         };
