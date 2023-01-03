@@ -525,6 +525,7 @@ where
                     _cat_lock = Some(polars_core::IUseStringCache::new())
                 }
             }
+            console::log_1(&"finish0".into());
             let mut csv_reader = self.core_reader(self.schema, vec![])?;
             console::log_1(&"finish1".into());
             csv_reader.as_df()?
