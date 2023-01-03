@@ -27,6 +27,8 @@ use crate::predicates::PhysicalIoExpr;
 use crate::utils::update_row_counts;
 use crate::RowCount;
 
+use web_sys::console;
+
 pub(crate) fn cast_columns(
     df: &mut DataFrame,
     to_cast: &[Field],
