@@ -2,6 +2,8 @@ use super::*;
 use crate::csv::read_impl::{to_batched_owned, BatchedCsvReader, OwnedBatchedCsvReader};
 use crate::csv::utils::infer_file_schema;
 
+use web_sys::console;
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum CsvEncoding {
@@ -453,6 +455,7 @@ where
 {
     /// Create a new CsvReader from a file/ stream
     fn new(reader: R) -> Self {
+        console::log_1(&"here".into());
         CsvReader {
             reader,
             rechunk: true,
