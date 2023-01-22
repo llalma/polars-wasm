@@ -18,6 +18,8 @@ use crate::csv::CsvEncoding;
 use crate::mmap::{MmapBytesReader, ReaderBytes};
 use crate::prelude::NullValues;
 
+use web_sys::console;
+
 pub(crate) fn get_file_chunks(
     bytes: &[u8],
     n_threads: usize,
@@ -99,7 +101,15 @@ static BOOLEAN_RE: Lazy<Regex> = Lazy::new(|| {
 fn infer_field_schema(string: &str, parse_dates: bool) -> DataType {
     // when quoting is enabled in the reader, these quotes aren't escaped, we default to
     // Utf8 for them
+    console::log_1(&"infer_field_schema_-1".into());
+    let x = RegexBuilder::new(r".*")
+        .case_insensitive(true)
+        .build()
+        .unwrap();
+    console::log_1(&x.to_string().into());
+    console::log_1(&string.into());
     if string.starts_with('"') {
+        console::log_1(&"infer_field_schema_0".into());
         if parse_dates {
             #[cfg(feature = "polars-time")]
             {
@@ -116,17 +126,22 @@ fn infer_field_schema(string: &str, parse_dates: bool) -> DataType {
                 panic!("activate one of {{'dtype-date', 'dtype-datetime', dtype-time'}} features")
             }
         } else {
+            console::log_1(&"infer_field_schema_1".into());
             DataType::Utf8
         }
     }
     // match regex in a particular order
     else if BOOLEAN_RE.is_match(string) {
+        console::log_1(&"infer_field_schema_bool".into());
         DataType::Boolean
     } else if FLOAT_RE.is_match(string) {
+        console::log_1(&"infer_field_schema_float".into());
         DataType::Float64
     } else if INTEGER_RE.is_match(string) {
+        console::log_1(&"infer_field_schema_int".into());
         DataType::Int64
     } else if parse_dates {
+        console::log_1(&"infer_field_schema_date".into());
         #[cfg(feature = "polars-time")]
         {
             match date_infer::infer_pattern_single(string) {
@@ -142,6 +157,7 @@ fn infer_field_schema(string: &str, parse_dates: bool) -> DataType {
             panic!("activate one of {{'dtype-date', 'dtype-datetime', dtype-time'}} features")
         }
     } else {
+        console::log_1(&"infer_field_schema_2".into());
         DataType::Utf8
     }
 }
@@ -187,16 +203,21 @@ pub fn infer_file_schema(
     // It may later.
     let encoding = CsvEncoding::LossyUtf8;
 
+    console::log_1(&"infer_file_schema_1".into());
+
     let bytes = skip_line_ending(skip_bom(reader_bytes), eol_char);
     if bytes.is_empty() {
         return Err(PolarsError::NoData("empty csv".into()));
     }
+    console::log_1(&"infer_file_schema_2".into());
     let mut lines = SplitLines::new(bytes, quote_char.unwrap_or(b'"'), eol_char).skip(*skip_rows);
     // it can be that we have a single line without eol char
     let has_eol = bytes.contains(&eol_char);
 
     // get or create header names
     // when has_header is false, creates default column names with column_ prefix
+
+    console::log_1(&"infer_file_schema_3".into());
 
     // skip lines that are comments
     let mut first_line = None;
@@ -213,10 +234,12 @@ pub fn infer_file_schema(
     } else {
         first_line = lines.next();
     }
+    console::log_1(&"infer_file_schema_4".into());
     // edge case where we have a single row, no header and no eol char.
     if first_line.is_none() && !has_eol && !has_header {
         first_line = Some(bytes);
     }
+    console::log_1(&"infer_file_schema_5".into());
 
     // now that we've found the first non-comment line we parse the headers, or we create a header
     let headers: Vec<String> = if let Some(mut header_line) = first_line {
@@ -228,9 +251,11 @@ pub fn infer_file_schema(
                 header_line = &header_line[..len - 1];
             }
         }
+        console::log_1(&"infer_file_schema_6".into());
 
         let byterecord = SplitFields::new(header_line, delimiter, quote_char, eol_char);
         if has_header {
+            console::log_1(&"infer_file_schema_7".into());
             let headers = byterecord
                 .map(|(slice, needs_escaping)| {
                     let slice_escaped = if needs_escaping && (slice.len() >= 2) {
@@ -242,7 +267,7 @@ pub fn infer_file_schema(
                     Ok(s)
                 })
                 .collect::<PolarsResult<Vec<_>>>()?;
-
+            console::log_1(&"infer_file_schema_8".into());
             let mut final_headers = Vec::with_capacity(headers.len());
 
             let mut header_names = PlHashMap::with_capacity(headers.len());
@@ -258,6 +283,7 @@ pub fn infer_file_schema(
             }
             final_headers
         } else {
+
             let mut column_names: Vec<String> = byterecord
                 .enumerate()
                 .map(|(i, _s)| format!("column_{}", i + 1))
@@ -298,6 +324,8 @@ pub fn infer_file_schema(
         lines = SplitLines::new(bytes, quote_char.unwrap_or(b'"'), eol_char).skip(*skip_rows);
     }
 
+    console::log_1(&"infer_file_schema_10".into());
+
     let header_length = headers.len();
     // keep track of inferred field types
     let mut column_types: Vec<PlHashSet<DataType>> =
@@ -307,6 +335,8 @@ pub fn infer_file_schema(
 
     let mut rows_count = 0;
     let mut fields = Vec::with_capacity(header_length);
+
+    console::log_1(&"infer_file_schema_11".into());
 
     // needed to prevent ownership going into the iterator loop
     let records_ref = &mut lines;
@@ -333,34 +363,44 @@ pub fn infer_file_schema(
             }
         }
 
+        console::log_1(&"infer_file_schema_12".into());
+
         let mut record = SplitFields::new(line, delimiter, quote_char, eol_char);
+        console::log_1(&"infer_file_schema_13".into());
 
         for i in 0..header_length {
             if let Some((slice, needs_escaping)) = record.next() {
                 if slice.is_empty() {
                     nulls[i] = true;
                 } else {
+                    console::log_1(&"infer_file_schema_14".into());
                     let slice_escaped = if needs_escaping && (slice.len() >= 2) {
                         &slice[1..(slice.len() - 1)]
                     } else {
                         slice
                     };
+                    console::log_1(&"infer_file_schema_15".into());
                     let s = parse_bytes_with_encoding(slice_escaped, encoding)?;
+                    console::log_1(&"infer_file_schema_16".into());
                     match &null_values {
                         None => {
+                            console::log_1(&"infer_file_schema_17".into());
                             column_types[i].insert(infer_field_schema(&s, parse_dates));
                         }
                         Some(NullValues::AllColumns(names)) => {
+                            console::log_1(&"infer_file_schema_18".into());
                             if !names.iter().any(|nv| nv == s.as_ref()) {
                                 column_types[i].insert(infer_field_schema(&s, parse_dates));
                             }
                         }
                         Some(NullValues::AllColumnsSingle(name)) => {
+                            console::log_1(&"infer_file_schema_19".into());
                             if s.as_ref() != name {
                                 column_types[i].insert(infer_field_schema(&s, parse_dates));
                             }
                         }
                         Some(NullValues::Named(names)) => {
+                            console::log_1(&"infer_file_schema_20".into());
                             let current_name = &headers[i];
                             let null_name = &names.iter().find(|name| &name.0 == current_name);
 

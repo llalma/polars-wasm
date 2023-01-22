@@ -189,9 +189,7 @@ impl<'a> CoreReader<'a> {
         parse_dates: bool,
     ) -> PolarsResult<CoreReader<'a>> {
         #[cfg(any(feature = "decompress", feature = "decompress-fast"))]
-        console::log_1(&"coreReader0".into());
         let mut reader_bytes = reader_bytes;
-        console::log_1(&"coreReader1".into());
 
         #[cfg(not(any(feature = "decompress", feature = "decompress-fast")))]
         if is_compressed(&reader_bytes) {
@@ -209,13 +207,13 @@ impl<'a> CoreReader<'a> {
                     // In case the file is compressed this schema inference is wrong and has to be done
                     // again after decompression.
                     #[cfg(any(feature = "decompress", feature = "decompress-fast"))]
-                    console::log_1(&"coreReader2".into());
                     if let Some(b) =
                         decompress(&reader_bytes, n_rows, delimiter, quote_char, eol_char)
                     {
                         reader_bytes = ReaderBytes::Owned(b);
                     }
-                    console::log_1(&"coreReader3".into());
+
+                    console::log_1(&"coreReader_new3".into());
 
                     let (inferred_schema, _) = infer_file_schema(
                         &reader_bytes,
@@ -231,12 +229,12 @@ impl<'a> CoreReader<'a> {
                         null_values.as_ref(),
                         parse_dates,
                     )?;
-                    console::log_1(&"coreReader4".into());
+                    console::log_1(&"coreReader_new4".into());
                     Cow::Owned(inferred_schema)
                 }
             }
         };
-        console::log_1(&"coreReader5".into());
+        console::log_1(&"coreReader_new5".into());
         if let Some(dtypes) = dtype_overwrite {
             let mut s = schema.into_owned();
             for (index, dt) in dtypes.iter().enumerate() {
@@ -244,6 +242,7 @@ impl<'a> CoreReader<'a> {
             }
             schema = Cow::Owned(s);
         }
+        console::log_1(&"coreReader_new6".into());
 
         // create a null value for every column
         let mut null_values = null_values.map(|nv| nv.compile(&schema)).transpose()?;
